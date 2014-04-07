@@ -1,7 +1,7 @@
 {
-  "name": "dom-streams-strawman",
+  "name": "dom-channels-strawman",
   "version": "0.0.0",
-  "description": "ES5 Node candidate implementation / testbed for WHATWG streams proposal",
+  "description": "Channel reference implementation",
   "main": "index.js",
   "directories": {
     "test": "test"
@@ -11,21 +11,22 @@
   },
   "repository": {
     "type": "git",
-    "url": "git://github.com/othiym23/streams.git"
+    "url": "git://github.com/gozala/channels.git"
   },
   "keywords": [
     "streams",
+    "channels",
     "whatwg",
     "w3c",
     "strawman",
     "reference"
   ],
-  "author": "Domenic Denicola <domenic@domenicdenicola.com>",
+  "author": "Irakli Gozalishvili <rfobic@gmail.com>",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/othiym23/streams/issues"
+    "url": "https://github.com/gozala/channels/issues"
   },
-  "homepage": "https://github.com/othiym23/streams",
+  "homepage": "https://github.com/gozala/channels",
   "dependencies": {
     "es6-promise": "~0.1.1"
   },
