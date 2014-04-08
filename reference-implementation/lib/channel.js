@@ -24,7 +24,7 @@ Channel.prototype.close = function() {
     this[$takeQueue].shift()(void(0))
 }
 Channel.prototype.put = function(value) {
-  return Promise(function(resolve) {
+  return new Promise(function(resolve) {
     // If channel is already closed then
     // void resulting promise.
     if (this[$isClosed]) {
@@ -53,7 +53,7 @@ Channel.prototype.put = function(value) {
   }.bind(this))
 }
 Channel.prototype.take = function() {
-  return Promise(function(resolve) {
+  return new Promise(function(resolve) {
     // If there is buffered values take first one that
     // was put.
     if (this[$buffer].length > 0) {
@@ -64,6 +64,10 @@ Channel.prototype.take = function() {
         this[$buffer].push(this[$putQueue].shift())
         this[$putQueue].shift()(true)
       }
+    }
+    else if (this[$putQueue].length > 0) {
+      resolve(this[$putQueue].shift())
+      this[$putQueue].shift()(true)
     }
     // If values are buffered and channel is closed
     // void returning promise.
