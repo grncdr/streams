@@ -8,86 +8,161 @@ Right now, we've transferred over most of the concepts and text, but none of the
 
 By the way, this transition is being tracked as [#62](https://github.com/whatwg/streams/issues/62).
 
+
+
 ## Channel APIs
 
 
 ```idl
-interface InputPort {
+// Port interface is implemented by both input and output ports
+// of the channel.
+interface Port {
+  // Closes this channel. Note that queued and bufferred values
+  // still can be taken off the closed channel. If there are
+  // queued takes on the channel (this implies buffer and put
+  // queue is empty) then those takes are resolved with `undefined`.
+  void close();
+}
+
+interface OutputPort {
   // If this channel is closed operation is ignored and
   // promise resolved with `undefined` is returned
   // (Promise.resolve(void 0)).
 
-  // If `value` is `undefined` it is ignored same as in JSON.
 
-  // If this channel has number of queued values (that were
-  // already put but have not being taken yet) that is less
-  // than it's `size` value is enqueued and promise resolved
-  // with `true` is returned (Promise.resolve(true)).
+  // If `value` put on a channel is `undefined` it is ignored
+  // same as it is in JSON.
 
-  // If this channel has `n` number of queued values that is
-  // equal or greater than it's size, value is enqued and promise
-  // is returned that is resolved with `true` once `n - size`
-  // "take"s on this channel occur.
+  // Channels can be bufferred or unbuffered. Putting values
+  // onto buffered channel returns promises resolved with
+  // `true` (`Promise.resolve(true)`) until buffer is full.
+
+  // If this channel is unbuffered or buffer is full puts values
+  // are queued. In such case returned value a promise that will
+  // be resolved with `true` once put value will make it into
+  // a buffer or be taken of the channel.
   Promise <boolean> put(any value);
 }
+OutputPort implements Port;
 
-interface OutputPort {
+interface InputPort {
   // If this channel has no queued "puts" and has being
-  // already closed returns promise resolved with `undefined`.
+  // already closed returns promise resolved with `undefined`
+  // think of it as reading undefined property.
   //
-  // If this channel has no queued "puts" then
+  // If channel has no queued or bufferred "puts" then
   // "take" is enqueued and promise is returned that
-  // will resolve to a value that will be "put" first.
+  // will be resolved with value whenever it's "put"
+  // on a channel.
   //
-  // If this channel has queued "puts" then dequeus
-  // value that was "put" first and returns promise
-  // resolved with that value.
+  // If this channel has bufferred data it's taken off
+  // the buffer and promise resolved with it is returned.
+  // If channel has queued "put" data it will be moved
+  // over to buffer.
+  //
+  // If channel is unbuffered and it has queued "put" data
+  // promise resolved with "put" data is returned, also
+  // causing pending put promise to resolve.
   Promise <any> take();
 }
+InputPort implements Port;
 
 interface Channel {
-  // Number of items that can be synchronously queued
-  // on this channel (For more details see put)
-  readonly attribute number size;
-  // Closes this channel. Note that queued values can
-  // still be taken off the closed channel but enqueud.
-  void close();
+  attribute InputPort input;
+  attribute OutputPort output;
 }
-Channel implements InputPort
-Channel implements OutputPort;
-// Enables passing channels across frames and workers.
-Channel implements Transferable;
+```
+
+## Buffer API
+
+
+```idl
+// Buffer interface is used for buffers that can be passed
+// into channels, they allow configurable bufferring of
+// the channel based of the data it will be handling.
+interface Buffer {
+  // If this buffer is empty this should return `true`,
+  // otherwise it should return `false`.
+  boolean isEmpty();
+  // If this buffer is full this should return `true`
+  // otherwise it should return `false`.
+  boolean isFull();
+  // If this buffer is empty this should throw exception
+  // otherwise it should return data chunk from the buffer
+  // and adjust internal state as appropriate.
+  any take();
+  // If this `buffer` is full this should throw an exception
+  // otherwise given `data` should be put into a buffer.
+  put(any data);
+}
 ```
 
 
 #### Properties of the Channel prototype
 
-##### constructor(size)
+##### constructor(buffer)
 
-The constructor is passed a number that will represent
-size of the constructed channel. Size of the channel
-is number of values that can be queued without blocking.
+The constructor can be passed optional argument that implements
+`Buffer` interface. If such argument is passed than resulting
+channel is bufferred and given `buffer` is used for bufferring
+data. If argument is a number, then buffered channel is created
+with fixed size buffer of given size. Bufferred channels allow
+seperation of data handling (delegating that to buffer) from data
+transfer. Bufferred channels won't block (return pre-resolved
+promises) when putting data on them until buffer is full, which
+gives more freedom to a producer and consumer to have they're own
+work schedules.
 
-Note: Blocking in this context isn't used in a thread
-blocking sence, it just implies that resolution of followup
-puts will be queued until values are taken off the queue.
+Data still can be put on the channel even if buffer is full or
+if channel is unbuferred it's just in such case put operation
+is going to be enqueued until it can be completed.
 
-Choosing a right channel size for the task can maximize
-througput between producer and consumer by balancing
-their speed.
+1. If `buffer` is instance of `Buffer`,
+   Let `buffer` be `buffer`.
+1. If `buffer` is type of number,
+   Let `buffer` be `new FixedBuffer(buffer)`.
+1. If `bufffer` is `undefined`
+   Let `buffer` be `undefined`.
+1. Let `puts` be `[]`
+1. Let `takes` be `[]`
+1. Let `closed` be `{value: false}`.
+1. Set `this.[[in]]` to
+   `new InputPort(buffer, takes, puts, closed)`
+1. Set `this.[[out]]` to
+   `new OutputPort(buffer, takes, puts, closed)`
+
+#### Properties of the Port prototype
+
+##### constructor(buffer, puts, takes, closed)
+
+1. Set `this.[[buffer]]` to `buffer`.
+1. Set `this.[[puts]]` to `puts`.
+1. Set `this.[[takes]]` to `takes`.
+1. Set `this.[[closed]]` to `closed`.
+
+##### close()
+
+1. If `this.[[closed]].value` is `false`,
+  1. Set `this.[[closed]].value` to `true`.
+  1. For each `take` in a `this.[[takes]]`
+    1. If `take.isPending()` is `true`
+    1. Complete `take` operation:
+       `take.complete(void 0)`
+  1. Set `this.[[takes]]` to `void 0`.
 
 
-1. Set `this.[[size]]` to `size`.
-1. Set `this.[[isClosed]]` to `false`.
-1. Set `this.[[buffer]]` to `[]`.
-1. Set `this.[[takeQueue]]` to `[]`.
-1. Set `this.[[putQueue]]` to `[]`.
+#### Properties of the OutputPort prototype
 
-##### get size
+##### constructor(buffer, takes, puts, closed)
 
-1. Return `this.[[size]]`.
+1. Apply `this` and all passed arguments no `Port`:
+   `Port.apply(this, [buffer, takes, puts, closed])`
 
-##### put(value)
+#### get [[proto]]
+
+1. Return `Port.prototype`.
+
+##### [[put]](value, timeout)
 
 1. Let `result` be a newly-created pending promise.
 1. If `this.[[isClosed]]` is `true` run the Promise Resolution
@@ -118,7 +193,14 @@ their speed.
 1. Return `result`.
 
 
-##### take()
+#### Properties of the InputPort prototype
+
+##### constructor(buffer, takes, puts, closed)
+
+1. Apply `this` and all passed arguments no `Port`:
+   `Port.apply(this, [buffer, takes, puts, closed])`
+
+##### [[take]](timeout)
 
 1. Let `result` be a newly-created pending promise.
 1. If `this.[[buffer]].length > 0`,
@@ -145,13 +227,3 @@ their speed.
       `this[[takeQueue]]`: `this[[takeQueue]].push(result)`.
 1. Return `result`.
 
-##### close()
-
-1. Set `this.[[isClosed]]` to `true`.
-1. If `this.[[takeQueue]].length > 0`,
-   1. Let `pendingTake` be `this.[[takeQueue]][0]`.
-   1. Shift `pendingTake` from `this.[[takeQueue]]`:
-      `this.[[takeQueue]].shift()`.
-   1. Run Promise Resolution Procedure
-      `[[Resolve]](pendingTake, void 0).
-   1. Re-run close `this.close()`.
