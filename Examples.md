@@ -386,8 +386,8 @@ class StreamingSocket {
     const rawSocket = createRawSocketObject(host, port);
     let bufferredSize = 0;
 
-    rawSocket.onerror = e => error.put(e);
-    rawSocket.onend = () => data.close();
+    rawSocket.onerror = e => error.output.put(e);
+    rawSocket.onend = () => data.output.close();
     rawSocket.ondata = chunk => {
       var chunkSize = chunk.byteLength
       bufferredSize = bufferredSize + chunkSize
@@ -395,7 +395,7 @@ class StreamingSocket {
       if (bufferredSize >= highWaterMark)
         rawSocket.pause();
 
-      output.put(open => {
+      data.output.put(open => {
         if (open) {
           bufferredSize = bufferredSize - chunkSize
           if (bufferredSize === 0)
@@ -411,7 +411,7 @@ class StreamingSocket {
 }
 
 const mySocketStream = new StreamingSocket("http://example.com", 80);
-print(mySocketStream.data)
+print(mySocketStream.data.input)
 ```
 
 
