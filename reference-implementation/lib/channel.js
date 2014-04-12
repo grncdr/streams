@@ -162,7 +162,7 @@ function put(port, value, timeout) {
       put.complete(void(0))
     }
     else if (value === void(0)) {
-      put.complete(void(0))
+      put.complete(true)
     }
     else {
       var take = void(0)
@@ -280,15 +280,16 @@ exports.Channel = Channel
 
 // Select allows to make a single choice between several channel
 // operations (put / take). Choice is made is made in favor of operation
-// that completes first or by order of providing choices if more than
-// one operation is ready to complete.
+// that completes first. If more than one operation is ready to be complete
+// at the same time choice is made in favor of the operation which was
+// requested first.
 // Usage:
 //
 // var select = new Select()
 // var a = select.take(input1).then(function(x) {
 //   console.log("Took " + x + " from input1")
 // })
-// var b = select.take(input1).then(function(x) {
+// var b = select.take(input2).then(function(x) {
 //   console.log("Took " + x + " from input2")
 // })
 // var c = select.put(output, x).then(function(_) {
