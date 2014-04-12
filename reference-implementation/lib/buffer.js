@@ -22,7 +22,7 @@ FixedBuffer.prototype = {
   put: function(item) {
     if (this.isFull())
       throw Error("Can't put to a full buffer")
-      this[$buffer].unshift(item)
+    this[$buffer].unshift(item)
   },
   take: function(item) {
     if (this.isEmpty())
