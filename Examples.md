@@ -116,7 +116,7 @@ Both of the implementations would behave the same although later one will cause 
 
 #### Coordination
 
-We have being talking about blocking channels for quite some time but the truth no execution has being blocked anywhere (that's deffinitely for the best :). Blocknig term has being used in a conceptual sense and implemented via promises that resolve when task is unblocked. This allows coorditanion between producer and a consumer of the data that is transported via channels (note that backpressure is on form of such coordination).
+We have being talking about blocking channels for quite some time but the truth no execution has being blocked anywhere (that's definitely for the best :). Blocking term has being used in a conceptual sense and implemented via promises that resolve when task is unblocked. This allows coorditanion between producer and a consumer of the data that is transported via channels (note that backpressure is on form of such coordination).
 
 Unfortunately this coordination and blocking has being hidden behind promises and their handler continuantions (callbacks). With a little bit of sugar and modern features of JS language (like generators) everything can be expressed in more natural way, also this conceptual blocking can become more apparent.
 
