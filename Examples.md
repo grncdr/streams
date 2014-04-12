@@ -215,7 +215,7 @@ output.put(3) // => Promise <true>
 output.put(4) // => Promise:pending
 ```
 
-In the example above first three items `1, 2, 3` are going to be bufferred and there for not block (return pre-resolved promise) while last one will block until `channel.input.take()` occurs. This allows producer and consumer to have their own schedules and waste time on waiting each other.
+In the example above first three items `1, 2, 3` are going to be bufferred and there for not block (return pre-resolved promise) while last one will block until `channel.input.take()` occurs. This allows producer and consumer to have their own schedules and don't waste time on waiting each other.
 
 
 As a matter of fact `new Channel(n)` is just a sugar for creating a channel with fixed size buffer of `3` items:
