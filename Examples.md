@@ -379,39 +379,51 @@ As an aside, this is pretty close to the existing HTML [`WebSocket` interface](h
 Let's assume we have some raw C++ socket object or similar, which presents the above API. The data it delivers via `ondata` comes in the form of `ArrayBuffer`s. We wish to create a class that wraps that C++ interface into a stream, with a configurable high-water mark set to a reasonable default. This is how you would do it:
 
 ```js
-class StreamingSocket {
-  constructor(host, port, { highWaterMark = 16 * 1024 } = {}) {
-    const data = this.data = new Channel(0);
-    const error = this.error = new Channel(0);
-    const rawSocket = createRawSocketObject(host, port);
-    let bufferredSize = 0;
+function StreamingSocket(host, port, opts) {
+  opts = opts || {};
+  var highWaterMark = opts.highWaterMark || 16 * 1024;
+  var data = this.data = new Channel(0);
+  var error = this.error = new Channel(0);
+  var rawSocket = createRawSocket(host, port);
+  var bufferredSize = 0;
 
-    rawSocket.onerror = e => error.output.put(e);
-    rawSocket.onend = () => data.output.close();
-    rawSocket.ondata = chunk => {
-      var chunkSize = chunk.byteLength
-      bufferredSize = bufferredSize + chunkSize
+  function onerror(err) {
+    error.output.put(err);
+  }
 
-      if (bufferredSize >= highWaterMark)
-        rawSocket.pause();
+  function onend() {
+    data.output.close();
+  }
 
-      data.output.put(open => {
-        if (open) {
-          bufferredSize = bufferredSize - chunkSize
-          if (bufferredSize === 0)
-            rawSocket.resume()
-        } else {
-          rawSocket.close();
-        }
-      });
+  function ondata(chunk) {
+    var chunkSize = chunk.byteLength;
+    bufferredSize = bufferredSize + chunkSize;
+
+    if (bufferredSize >= highWaterMark)
+      rawSocket.pause();
+
+    function onput(open) {
+      if (open) {
+        bufferredSize = bufferredSize - chunkSize;
+        if (bufferredSize === 0)
+          rawSocket.resume();
+      } else {
+        rawSocket.close();
+      }
     }
 
-    rawSocket.resume();
+    data.output.put(onput);
   }
+
+  rawSocket.onerror = onerror;
+  rawSocket.onend = onend;
+  rawSocket.ondata = ondata;
+
+  rawSocket.resume();
 }
 
-const mySocketStream = new StreamingSocket("http://example.com", 80);
-print(mySocketStream.data.input)
+var mySocketStream = new StreamingSocket("http://example.com", 80);
+print(mySocketStream.data.input);
 ```
 
 
