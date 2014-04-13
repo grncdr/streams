@@ -381,7 +381,6 @@ Let's assume we have some raw C++ socket object or similar, which presents the a
 ```js
 var $input = "@@socket/input";
 var $error = "@@socket/error";
-var $output = "@@socket/output";
 function Socket(host, port, opts) {
   opts = opts || {};
   var highWaterMark = opts.highWaterMark || 16 * 1024;
@@ -483,19 +482,20 @@ function close(handle) {
 }
 
 const readFile = (path, {highWaterMark = 16 * 1024} = {}) => {
-  const output = new Channel(highWaterMark);
+  const buffer = new ByteBuffer(highWaterMark);
+  const { input, output } = new Channel(buffer);
   spawn(function*() {
     var file = yield open(filename);
     var chunk = void(0);
     try {
       while (chunk = yield read(file), chunk !== void(0)) {
-        yield output.output.put(chunk)
+        yield output.put(chunk)
       }
     } finally {
       yield close(file)
     }
   })
-  return output
+  return input
 }
 ```
 
