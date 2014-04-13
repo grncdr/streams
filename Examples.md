@@ -450,17 +450,26 @@ function read(handle) {
   })
 }
 
+function close(handle) {
+  return new Promie(function (resolve, reject) {
+    handle.close(function (error) {
+      if (error) reject(error)
+      else resolve(void(0))
+    })
+  })
+}
+
 const readFile = (path, {highWaterMark = 16 * 1024} = {}) => {
-  const output = new ByteChannel(highWaterMark);
+  const output = new Channel(highWaterMark);
   spawn(function*() {
     var file = yield open(filename);
     var chunk = void(0);
     try {
       while (chunk = yield read(file), chunk !== void(0)) {
-        yield output.put(chunk)
+        yield output.output.put(chunk)
       }
     } finally {
-      close(file)
+      yield close(file)
     }
   })
   return output
