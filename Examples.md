@@ -360,7 +360,7 @@ channel.input.take().then(function(x) {
 
 ### Push or Pull
 
-In general weather to use push or pull tends to be a subject of big debate. Producers tend to prefer push based approach while consumers tend to prefer pull based approach. Truth is the only way to satisfy both producer and a consumer is to put a queue between them and let them make choice of weather to use pull or push independently of each other based of their own domain. As a matter of fact channels do exactly that they are just a data queues with internal buffer size that can be used to smooth out I/O between producer and consumer. Note that channel size does not implies limit of data it can hold, but rather a number of data chunks it can hold without traying to apply backpressure on the producer.
+In general whether to use push or pull tends to be a subject of big debate. Producers tend to prefer push based approach while consumers tend to prefer pull based approach. Truth is the only way to satisfy both producer and a consumer is to put a queue between them and let them make choice of whether to use pull or push independently of each other based of their own domain. As a matter of fact channels do exactly that they are just a data queues with internal buffer size that can be used to smooth out I/O between producer and consumer. Note that channel size does not implies limit of data it can hold, but rather a number of data chunks it can hold without trying to apply backpressure on the producer.
 
 
 #### Adapting a Push-Based Data Source
