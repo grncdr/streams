@@ -360,7 +360,7 @@ channel.input.take().then(function(x) {
 
 ### Push or Pull
 
-In general whether to use push or pull tends to be a subject of big debate. Producers tend to prefer push based approach while consumers tend to prefer pull based approach. Truth is the only way to satisfy both producer and a consumer is to put a queue between them and let them make choice of whether to use pull or push independently of each other based of their own domain. As a matter of fact bufferede channels do exactly that they are just a data queues with internal buffer that is used to smooth out I/O between producer and consumer. Note that when buffer is full, puts are not lost, but rather queued up applying backpressure on the producer. Choosing right buffer for the task is crucial to arraging best use of resources.
+In general whether to use push or pull tends to be a subject of big debate. Producers tend to prefer push based approach while consumers tend to prefer pull based approach. Truth is the only way to satisfy both producer and a consumer is to put a queue between them and let them make choice of whether to use pull or push independently of each other based of their own domain. As a matter of fact buffered channels do exactly that they are just a data queues with internal buffer that is used to smooth out I/O between producer and consumer. Note that when buffer is full, puts are not lost, but rather queued up applying backpressure on the producer. Choosing right buffer for the task is crucial to arranging best use of resources.
 
 
 #### Adapting a Push-Based Data Source
