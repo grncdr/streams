@@ -360,7 +360,7 @@ channel.input.take().then(function(x) {
 
 ### Push or Pull
 
-In general whether to use push or pull tends to be a subject of big debate. Producers tend to prefer push based approach while consumers tend to prefer pull based approach. Truth is the only way to satisfy both producer and a consumer is to put a queue between them and let them make choice of whether to use pull or push independently of each other based of their own domain. As a matter of fact channels do exactly that they are just a data queues with internal buffer size that can be used to smooth out I/O between producer and consumer. Note that channel size does not implies limit of data it can hold, but rather a number of data chunks it can hold without trying to apply backpressure on the producer.
+In general whether to use push or pull tends to be a subject of big debate. Producers tend to prefer push based approach while consumers tend to prefer pull based approach. Truth is the only way to satisfy both producer and a consumer is to put a queue between them and let them make choice of whether to use pull or push independently of each other based of their own domain. As a matter of fact bufferede channels do exactly that they are just a data queues with internal buffer that is used to smooth out I/O between producer and consumer. Note that when buffer is full, puts are not lost, but rather queued up applying backpressure on the producer. Choosing right buffer for the task is crucial to arraging best use of resources.
 
 
 #### Adapting a Push-Based Data Source
@@ -372,58 +372,69 @@ In general, a push-based data source can be modeled as:
 - A `close` method that sends an advisory signal to stop the flow of data
 - A `ondata` handler that fires when new data is pushed from the source
 - A `onend` handler that fires when the source has no more data
-- A `onerror` handler that fires when the source signals an error getting data
+- A `onerror` handler that fires when the source signals an error getting data.
 
 As an aside, this is pretty close to the existing HTML [`WebSocket` interface](http://www.whatwg.org/specs/web-apps/current-work/multipage/network.html#the-websocket-interface), with the exception that `WebSocket` does not give any method of pausing or resuming the flow of data.
 
 Let's assume we have some raw C++ socket object or similar, which presents the above API. The data it delivers via `ondata` comes in the form of `ArrayBuffer`s. We wish to create a class that wraps that C++ interface into a stream, with a configurable high-water mark set to a reasonable default. This is how you would do it:
 
 ```js
-function StreamingSocket(host, port, opts) {
+var $input = "@@socket/input";
+var $error = "@@socket/error";
+var $output = "@@socket/output";
+function Socket(host, port, opts) {
   opts = opts || {};
   var highWaterMark = opts.highWaterMark || 16 * 1024;
-  var data = this.data = new Channel(0);
-  var error = this.error = new Channel(0);
-  var rawSocket = createRawSocket(host, port);
-  var bufferredSize = 0;
+  // Use earlier defined ByteBuffer that will take care of
+  // bufferring data and blocking puts if it's full (over the
+  // `highWaterMark`).
+  var buffer = new ByteBuffer(highWaterMark);
+  var input = this[$input] = new Channel(buffer);
+  var error = this[$error] = new Channel();
 
-  function onerror(err) {
-    error.output.put(err);
+  var rawSocket = createRawSocket(host, port);
+
+
+  function onerror(e) {
+    error.output.put(e);
   }
 
   function onend() {
     data.output.close();
   }
 
-  function ondata(chunk) {
-    var chunkSize = chunk.byteLength;
-    bufferredSize = bufferredSize + chunkSize;
-
-    if (bufferredSize >= highWaterMark)
-      rawSocket.pause();
-
-    function onput(open) {
-      if (open) {
-        bufferredSize = bufferredSize - chunkSize;
-        if (bufferredSize === 0)
-          rawSocket.resume();
-      } else {
-        rawSocket.close();
-      }
+  function onput() {
+    // Resume only when buffer is empty again.
+    if (buffer.isEmpty()) {
+      rawSocket.resume();
     }
-
-    data.output.put(onput);
   }
+
+  function ondata(chunk) {
+    data.output.put(chunk).then(onput);
+    // Pause whenever buffer is full.
+    if (buffer.isFull()) {
+      rawSocket.pause();
+    }
+  }
+
 
   rawSocket.onerror = onerror;
   rawSocket.onend = onend;
   rawSocket.ondata = ondata;
 
   rawSocket.resume();
+  ondrain();
+}
+StreamingSocket.prototype = {
+  constructor: StreamingSocket,
+  get input() { return this[$input].input },
+  get error() { return this[$error].input },
+  get output() { return this[$output].output }
 }
 
-var mySocketStream = new StreamingSocket("http://example.com", 80);
-print(mySocketStream.data.input);
+var client = new Socket("http://example.com", 80);
+print(client.input);
 ```
 
 
