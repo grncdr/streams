@@ -141,9 +141,9 @@ var print = function print(input) {
 }
 ```
 
-In this example `input.take()` does actually block the execution of the spwaned task (but nothing else) until coresponding data is present on the channel.
+In this example `input.take()` does actually block the execution of the spawned task (but nothing else) until the corresponding data is present on the channel.
 
-This covers the consumbtion part but now let's consider producer part and implement our first `putAll` example:
+This covers the consumption part but now let's consider the producer part and implement our first `putAll` example:
 
 ```js
 function putAll(output, chunks) {
