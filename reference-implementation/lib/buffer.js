@@ -69,7 +69,7 @@ DroppingBuffer.prototype.put = function(item) {
 }
 exports.DroppingBuffer = DroppingBuffer
 
-var $bufferred = "@@buffer/bufferred"
+
 
 function ByteBuffer(byteLength) {
   this[$size] = byteLength
@@ -88,8 +88,24 @@ ByteBuffer.prototype.put = function(item) {
   this.byteLength = this.byteLength + item.byteLength
 }
 ByteBuffer.prototype.take = function() {
-  var item = FixedBuffer.prototype.take.call(this)
-  this.byteLength = this.byteLength - item.byteLength
-  return item
+  var result = new ArrayBuffer(this.byteLength)
+  var chunks = this[$buffer].splice(0)
+
+  this.byteLength = 0
+
+  var index = 0
+  var offset = 0
+  while (index < chunks.length) {
+    var chunk = chunks[index]
+    var element = 0
+    while (element < chunk.byteLength) {
+      result[offset] = chunk[element]
+      element = element + 1
+      offset = offset + 1
+    }
+    index = index + 1
+  }
+
+  return result
 }
 exports.ByteBuffer = ByteBuffer
