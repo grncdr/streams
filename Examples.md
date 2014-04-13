@@ -381,7 +381,6 @@ Let's assume we have some raw C++ socket object or similar, which presents the a
 ```js
 var $input = "@@socket/input";
 var $error = "@@socket/error";
-var $output = "@@socket/output";
 function Socket(host, port, opts) {
   opts = opts || {};
   var highWaterMark = opts.highWaterMark || 16 * 1024;
@@ -424,13 +423,11 @@ function Socket(host, port, opts) {
   rawSocket.ondata = ondata;
 
   rawSocket.resume();
-  ondrain();
 }
 StreamingSocket.prototype = {
   constructor: StreamingSocket,
   get input() { return this[$input].input },
-  get error() { return this[$error].input },
-  get output() { return this[$output].output }
+  get error() { return this[$error].input }
 }
 
 var client = new Socket("http://example.com", 80);
