@@ -70,7 +70,7 @@ output.put(3)
 output.close()
 ```
 
-#### Pumping array content intou Channel output
+#### Pumping array content into Channel output
 
 Although sending array content one element at a time isn't practical it still a useful example for explaning channels. Consider following example:
 
@@ -357,7 +357,30 @@ channel.input.take().then(function(x) {
 }) // => Promise <"hello world">
 ```
 
-### Erorr handling
+### I wanna play a state machine
+
+So above section was covering techniques to improve data throughput without adding more complexity or state handling to the API. Although there still maybe a use case where consumer may wanna be in full control on how much to read, when to to yield to event loop and etc.. on it's own. It may not be obvious but channels allow you to do that too. Given the synchronous buffer API and asynchronous channel API you could get a complete control:
+
+```js
+var buffer = new ByteBuffer(16 * 1024);
+var { input, output } = new Channel(buffer);
+
+function process(x) {
+  console.log(x)
+}
+
+
+function next(chunk, skip)  {
+  if (!skip) process(chunk)
+  while (!buffer.isEmpty()) {
+    process(buffer.take())
+  }
+  input.take().then(next)
+}
+next(void 0, true)
+```
+
+### Error handling
 
 Channels do not provide any specical treatment of errors & the reason is that channel is just a data transport that is guaranteed to deliver data from it's one end to the other, if there is an error it's not a transportation error but an error in some other part of your application. How you handle those errors is orthogonal to a transportation of the data. As a matter of fact differnt use cases will require different ways of signaling and handling errors. One may argue that JS was designed with a built-in error handling mechanism and that's what channels should obey to, althoguh it is important to remember that JS did not had any notion of IO which has changed with addition of [XMLHttpRequest][], it also did not have way to execute things in parallel, which changed with addition of [Web Workers][]. Now if you look at these additions non of them throw exceptions on errors, instead they have a special "error" event type to signal errors. Also keep in mind that while an "error" on [XMLHttpRequest][] happens only once and means that request has failed, "error" on [Workers][] may happen many times (could be triggerred by invalid message parsing for example). Same is true in case of channels, in some cases error on the producer may completely abort the task and close a data channel, while in other cases many errors can occur without any issues. In terms of analogy it helps to think of channels more of a transports for a specific event types rather than [XMLHttpRequest][] or [Worker][] APIs themselfs. In that respect it would make sense to model both `XMLHttpRequest` and `Worker` as a subclasses of some general socket API with three ports:
 
@@ -455,8 +478,8 @@ function Socket(host, port, opts) {
 
   rawSocket.resume();
 }
-StreamingSocket.prototype = {
-  constructor: StreamingSocket,
+Socket.prototype = {
+  constructor: Socket,
   get input() { return this[$response].input },
   get error() { return this[$error].input }
 }
