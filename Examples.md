@@ -357,6 +357,37 @@ channel.input.take().then(function(x) {
 }) // => Promise <"hello world">
 ```
 
+### Erorr handling
+
+Channels do not provide any specical treatment of errors & the reason is that channel is just a data transport that is guaranteed to deliver data from it's one end to the other, if there is an error it's not a transportation error but an error in some other part of your application. How you handle those errors is orthogonal to a transportation of the data. As a matter of fact differnt use cases will require different ways of signaling and handling errors. One may argue that JS was designed with a built-in error handling mechanism and that's what channels should obey to, althoguh it is important to remember that JS did not had any notion of IO which has changed with addition of [XMLHttpRequest][], it also did not have way to execute things in parallel, which changed with addition of [Web Workers][]. Now if you look at these additions non of them throw exceptions on errors, instead they have a special "error" event type to signal errors. Also keep in mind that while an "error" on [XMLHttpRequest][] happens only once and means that request has failed, "error" on [Workers][] may happen many times (could be triggerred by invalid message parsing for example). Same is true in case of channels, in some cases error on the producer may completely abort the task and close a data channel, while in other cases many errors can occur without any issues. In terms of analogy it helps to think of channels more of a transports for a specific event types rather than [XMLHttpRequest][] or [Worker][] APIs themselfs. In that respect it would make sense to model both `XMLHttpRequest` and `Worker` as a subclasses of some general socket API with three ports:
+
+```js
+function Socket() {
+  this[$request] = new Channel()
+  this[$response] = new Channel()
+  this[$error] = new Channel()
+}
+Socket.prototype = {
+  constructor: Socket,
+  get input() {
+    return this[$response].input
+  },
+  get output() {
+    return this[$request].output
+  },
+  get error() {
+    return this[$error].input
+  }
+}
+```
+
+Now in case of `XMLHttpRequest` message on the `error` channel would close all three channels as request is failed, while in case of `Worker` that won't happen.
+
+It is also probably no coincidence that OS processes have a very similar interface through `stdin`, `stdout` and `stderr` :)
+
+
+As we go through more examples we'll see how different error handling APIs going to be used in different examples providing a better picture.
+
 
 ### Push or Pull
 
@@ -379,7 +410,7 @@ As an aside, this is pretty close to the existing HTML [`WebSocket` interface](h
 Let's assume we have some raw C++ socket object or similar, which presents the above API. The data it delivers via `ondata` comes in the form of `ArrayBuffer`s. We wish to create a class that wraps that C++ interface into a stream, with a configurable high-water mark set to a reasonable default. This is how you would do it:
 
 ```js
-var $input = "@@socket/input";
+var $input = "@@socket/response";
 var $error = "@@socket/error";
 function Socket(host, port, opts) {
   opts = opts || {};
@@ -388,7 +419,7 @@ function Socket(host, port, opts) {
   // bufferring data and blocking puts if it's full (over the
   // `highWaterMark`).
   var buffer = new ByteBuffer(highWaterMark);
-  var input = this[$input] = new Channel(buffer);
+  var response = this[$response] = new Channel(buffer);
   var error = this[$error] = new Channel();
 
   var rawSocket = createRawSocket(host, port);
@@ -399,7 +430,7 @@ function Socket(host, port, opts) {
   }
 
   function onend() {
-    data.output.close();
+    response.output.close();
   }
 
   function onput() {
@@ -410,7 +441,7 @@ function Socket(host, port, opts) {
   }
 
   function ondata(chunk) {
-    data.output.put(chunk).then(onput);
+    response.output.put(chunk).then(onput);
     // Pause whenever buffer is full.
     if (buffer.isFull()) {
       rawSocket.pause();
@@ -426,7 +457,7 @@ function Socket(host, port, opts) {
 }
 StreamingSocket.prototype = {
   constructor: StreamingSocket,
-  get input() { return this[$input].input },
+  get input() { return this[$response].input },
   get error() { return this[$error].input }
 }
 
@@ -449,20 +480,20 @@ Let's assume that we have some raw C++ file handle API matching this type of set
 
 
 ```js
-
-function open(filename) {
+// Just an utilities to wrap raw file API into promise based interface.
+function open(path) {
   return new Promise(function(resolve, reject) {
-    var handle = createRawFileHandle(filename);
-    handle.open(function(error) {
+    var file = createRawFileHandle(filename);
+    file.open(function(error) {
       if (error) reject(error)
-      else resolve(handle)
+      else resolve(file)
     })
   })
 }
 
-function read(handle) {
+function read(file) {
   return new Promise(function(resolve, reject) {
-    handle.read(function(error, done, data) {
+    file.read(function(error, done, data) {
       if (error) reject(error)
       else if (done) resolve(void(0))
       else resolve(data)
@@ -470,34 +501,80 @@ function read(handle) {
   })
 }
 
-function close(handle) {
-  return new Promie(function (resolve, reject) {
-    handle.close(function (error) {
-      if (error) reject(error)
-      else resolve(void(0))
-    })
-  })
-}
+var $data = "@@file-reader/data"
+var $errors = "@@file-reader/errors"
+function FileReader(path, options) {
+  options = options || {}
+  var buffer = new ByteBuffer(options.highWaterMark || 16 * 1024)
+  var data = this[$data] = new Channel(buffer)
+  var errors = this[$errors] = []
 
-const readFile = (path, {highWaterMark = 16 * 1024} = {}) => {
-  const buffer = new ByteBuffer(highWaterMark);
-  const { input, output } = new Channel(buffer);
+  this.onTake = this.onTake.bind(this)
+
   spawn(function*() {
-    var file = yield open(filename);
-    var chunk = void(0);
+    var file = void(0)
     try {
-      while (chunk = yield read(file), chunk !== void(0)) {
-        yield output.put(chunk)
+      // Open a file
+      file = yield open(path)
+      var chunk = void(0)
+      while (chunk = yield read(file)) {
+        yield data.output.put(chunk)
       }
+    } catch(error) {
+      errors.unshift(error)
     } finally {
-      yield close(file)
+      if (file)
+        file.close()
     }
+
+    data.output.close()
   })
-  return input
 }
+FileReader.prototype = Object.create(InputPort.prototype)
+FileReader.prototype.constructor = FileReader
+// FileReader take is like regular take on arbitrary channels, with a
+// difference that it's return type is a `Promise <ByteArray|Error|undefined>`
+// instead of `Promise <ByteArray|undefined>`.
+FileReader.prototype.take = function() {
+  var errors = this[$errors]
+  return this[$data].input.take().then(function(chunk) {
+    return chunk === void(0) && errors.length ? errors.pop() : chunk
+  })
+}
+// `read` method is very much like `take()` with a difference that given a
+// domain knowledge it's rejects promises if taken chunk is an instance of
+// Error.
+FileReader.prototype.read = function() {
+  this.take().then(function(chunk) {
+    return chunk instanceof Error ? Promise.reject(chunk) : chunk
+  })
+}
+FileReader.prototype.close = function() {
+  this[$data].close()
+}
+```
+
+As you may have noticed example above delegated data handling and loadbalancing to `ByteBuffer` which will cause `FileReader` to pause / resume reading from underlying C++ handler, when buffer is / isn't full.
+While `FileReader` act's as a regular `InputPort` it also provides domain specific functionality allowing consumers to use  traditional error handling techniques:
+
+```js
+spawn(function*() {
+  var reader = new FileReader(path)
+  var chunk = void(0)
+  try {
+    while (chunk = yield reader.read()) {
+      console.log(chunk)
+    }
+    console.log("Read all")
+  } catch (error) {
+    console.error("Failed to read", error)
+  }
+})
 ```
 
 
 
 [Task.js]:http://taskjs.org/
 [FIFO]:http://en.wikipedia.org/wiki/FIFO
+[web workers]:http://www.w3.org/TR/workers/
+[XMLHttpRequest]:http://www.w3.org/TR/XMLHttpRequest/
