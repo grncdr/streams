@@ -1,0 +1,3 @@
+[submodule "reference-implementation"]
+	path = reference-implementation
+	url = git://github.com/gozala/channel.git
