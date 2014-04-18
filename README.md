@@ -64,7 +64,7 @@ interface Buffer {
 
 ### Port
 
-Port is a class that both `InputPort` and `OutputPort` inherit from.
+Port is a class that both `InputPort` and `OutputPort` derive from.
 
 ```
 // Port interface is implemented by both input and output ports
@@ -80,26 +80,68 @@ interface Port {
 
 #### Properties of the Port prototype
 
+##### constructor(channel)
+
+1. Set `this.[[channel]]` to `channel`.
+1. Return `this`
+
 ##### close()
 
-1. If `this.[[closed]].value` is `false`,
-  1. Set `this.[[closed]].value` to `true`.
-  1. Let `take` be `this.[[takes]].pop()`,
-    1. If `take` is an object,
-       1. If `take.timeout.pending` is `true`,
-          1. Set `take.timeout.pending` to `false`.
-          1. Fulfill `take.promise` with `void 0`.
-       1. Repeat from: Let `take` be `this.[[takes]].pop()`
+1. Let `channel` be `this.[[channel]]`
+1. Let `result` be result of calling `[[close]]` method of `channel`.
+1. Return `result`.
 
 
+### Operation
+
+Objects implementing `Operation` interface are used to represent "take" and "put" operations on the channel. They can have a state that is either complete or pending. State can be checked via `isPending` method. If operation is complete it's result can be accessed via `valueOf` method. If operation is pending calling `valueOf` throws an error. Operation derives from `Promise` and it's `then` method can be used to access it's result.
+
+```
+interface Operation : Promise {
+  // If operation is pending returns `true` otherwise
+  // returns `false`.
+  boolean isPending();
+  // If operation is pending throws an error, otherwise
+  // returns result of the operation.
+  any valueOf();
+}
+```
+
+#### Properties of the Operation prototype
+
+#### isPending()
+
+1. Let `choice` be `this.[[select]].[[choice]]`.
+1. Let `result` be `true.
+1. If `this` is `choice`, Set `result` to `false`.
+1. Return `result`.
+
+#### valueOf()
+
+1. If `this.isPending()` is `true` throw an Error.
+1. Return `this.[[result]]`.
+
+#### [[isActive]]
+
+1. Let `result` be `true`.
+1. If `this.[[select]].[[choice]]` is not `void 0`,
+   Set `result` to `false`.
+1. Return `result`.
+
+#### [[complete]](result)
+
+1. If `this.[[isActive]]()` is `false` throw an Error.
+1. Set `this.[[select]].[[choice]]` to `this`.
+1. Resolve `this` promise with a `result` as a `value`.
+1. Set `this.[[result]]` to `result`.
 
 ### OutputPort
 
-All the channel `output` ports are instances of `OutputPort`. There is no public constructor available for this class.
-
+An output port represents end of the channel into which data can be put to make it available to the input port of the same channel.
 
 ```
-interface OutputPort {
+[NamedConstructor=OutputPort(Channel channel)]
+interface OutputPort : Port {
   // If this channel is closed operation is ignored and
   // promise resolved with `undefined` is returned
   // (Promise.resolve(void 0)).
@@ -116,31 +158,34 @@ interface OutputPort {
   // are queued. In such case returned value a promise that will
   // be resolved with `true` once put value will make it into
   // a buffer or be taken of the channel.
-  Promise <boolean> put(any value);
+  Operation <boolean> put(any value);
 }
-OutputPort implements Port;
 ```
 
 #### Properties of the OutputPort prototype
 
-#### get [[proto]]
+#### constructor(channel)
+
+1. Call the `[[Call]]` internal method of `Port`, with `this` as `thisArgument` and `channel` as an argument.
+
+#### get [[Prototype]]
 
 1. Return `Port.prototype`.
 
 ##### put(data)
 
-1. Let `timeout` be `{pending: true}`.
-1. Return `[[put]](this, data, timeout)`.
-
+1. Let `channel` be `this.[[channel]]`
+1. Return `channel.[[put]](this, data, void 0)`.
 
 
 ### InputPort
 
-All the channel `input` ports are instances of `InputPort`. There is no public constructor available for this class.
+An input port represents end of the channel from which data can be taken, that was put there from the output port of the same channel.
 
 
 ```
-interface InputPort {
+[NamedConstructor=InputPort(Channel channel)]
+interface InputPort : Port {
   // If this channel has no queued "puts" and has being
   // already closed returns promise resolved with `undefined`
   // think of it as reading undefined property.
@@ -158,23 +203,24 @@ interface InputPort {
   // If channel is unbuffered and it has queued "put" data
   // promise resolved with "put" data is returned, also
   // causing pending put promise to resolve.
-  Promise <any> take();
+  Operation <any> take();
 }
-InputPort implements Port;
 ```
 
 
 #### Properties of the InputPort prototype
 
-#### get [[proto]]
+1. Call the `[[Call]]` internal method of `Port`, with `this` as `thisArgument` and `channel` as an argument.
+
+#### get [[Prototype]]
 
 1. Return `Port.prototype`.
 
 
 ##### take()
 
-1. Let `timeout` be `{pending: true}`.
-1. Return `[[take]](this, timeout)`.
+1. Let `channel` be `this.[[channel]]`
+1. Return `channel.[[take]](this, void 0)`.
 
 
 ### Channel APIs
@@ -214,21 +260,12 @@ is going to be enqueued until it can be completed.
    Let `buffer` be `new FixedBuffer(buffer)`.
 1. If `bufffer` is `undefined`
    Let `buffer` be `undefined`.
-1. Let `puts` be `[]`
-1. Let `takes` be `[]`
-1. Let `closed` be `{value: false}`.
-1. Let `input` be new instance of `InputPort`.
-1. Let `output` be new instance of `OutputPort`.
-1. Set `input.[[buffer]]` to `buffer`.
-1. Set `output.[[buffer]]` to `buffer`.
-1. Set `input.[[puts]]` to `puts`.
-1. Set `output.[[puts]]` to `puts`.
-1. Set `input.[[takes]]` to `takes`.
-1. Set `output.[[takes]]` to `takes`.
-1. Set `input.[[closed]]` to `closed`.
-1. Set `output.[[closed]]` to `closed`.
-1. Set `this.[[in]]` to `input`.
-1. Set `this.[[out]]` to `output`.
+1. Set `this.[[buffer]]` to `buffer`.
+1. Set `this.[[puts]]` to `[]`.
+1. Set `this.[[takes]]` to `[]`.
+1. Set `input.[[closed]]` to `false`.
+1. Set `this.[[in]]` to `new InputPort(this)`.
+1. Set `this.[[out]]` to `new OutputPort(this)`.
 
 ##### get input()
 
@@ -238,103 +275,134 @@ is going to be enqueued until it can be completed.
 
 1. Return `this.[[out]]`.
 
+##### close()
+
+1. If `this.[[closed]]` is `false`,
+  1. Set `this.[[closed]]` to `true`.
+  1. While `this.[[takes]].length > 0`:
+     1. Let `take` be `this.[[takes]].pop()`,
+     1. If `take.[[isActive]]()` is `true`,
+        Call `take.[[complete]](void 0)`.
+1. Return `void 0`.
+
+
+##### [[put]](port, data, select)
+
+1. If `port` isn't instance of `OutputPort` throw `TypeError`.
+1. Let `puts` be `this.[[puts]]`.
+1. Let `takes` be `this.[[takes]]`.
+1. Let `buffer` be `this.[[buffer]]`.
+1. Let `put` be a newly-created pending operation.
+1. If `select` is `void 0`,
+   1. Set `put.[[select]]` to `put`.
+1. If `select` is instance of `Select`,
+   1. Set `put.[[select]]` to `select`.
+1. If `put.[[isActive]]()` is `true`,
+   1. If `this.[[closed]]` is `true,
+      call `put.[[complete]](void 0).
+   1. If `this.[[closed]]` is `false` and
+      1. If `data` is `void 0`,
+         1. call `put.[[complete]](true)`.
+      1. If `data` is not `void 0`,
+         1. If `buffer` is `void 0`,
+            1. Let `take` be `takes.pop()`.
+            1. While `take` is object & `take.[[isActive]]()` is `false`,
+               1. Set `take` to `take.pop()`.
+            1. If `take` is object & `take.[[isActive]]()` is `true`,
+               1. Call `put.[[complete]](true)`.
+               1. Call `take.[[complete]](data)`.
+            1. If `take` is `void 0`,
+               1. Set `put.[[value]]` to `data`.
+               1. Call `puts.unshift(put)`.
+         1. If `buffer` is instance of `Buffer`,
+            1. If `buffer.isFull()` is `true`,
+               1. Set `put.[[value]]` to `data`.
+               1. Call `puts.unshift(put)`.
+            1. If `buffer.isFull()` is `false,
+               1. Call `buffer.put(data)`.
+               1. Call `put.[[complete]](true)`.
+               1. If `buffer.isEmpty()` is `false`,
+                  1. Let `take` be `takes.pop()`.
+                  1. While `take` is object && `take.[[isActive]]()` is `false`
+                     1. Set `take` to `take.pop()`.
+                  1. If `take` is object & `take.[[isActive]]()` is `true`,
+                     1. Call `take.[[complete]](buffer.take())`.
+1. Return `put`.
+
+
+##### [[take]](port, select)
+
+1. If `port` isn't instance of `InputPort` throw `TypeError`.
+1. Let `puts` be `this.[[puts]]`.
+1. Let `takes` be `this.[[takes]]`.
+1. Let `buffer` be `this.[[buffer]]`.
+1. Let `take` be a newly-created pending operation.
+1. If `select` is `void 0`,
+   1. Set `put.[[select]]` to `put`.
+1. If `select` is instance of `Select`,
+   1. Set `put.[[select]]` to `select`.
+1. If `take.[[isActive]]()` is `true`,
+   1. If `buffer` is not `void 0`,
+      1. Let `isEmpty` be `buffer.isEmpty()`.
+      1. If `isEmpty` is `false`
+         1. Let `data` be `buffer.take()`.
+         1. Call `take.[[complete]](data)`.
+         1. If `buffer.isFull()` is `false`,
+            1. Let `put` be `puts.pop()`.
+            1. While `buffer.isFull()` is `false` and
+               `put` is object
+               1. If `put.[[isActive]]()` is `true`,
+                  1. Call `put.[[complete]](true)`.
+                  1. Call `buffer.put(put.[[value]])`.
+               1. set `put` to `puts.pop()`.
+      1. If `isEmpty` is `true`,
+         1. If `this.[[closed]]` is `true`,
+            1. Call `take.[[complete]](void 0)`.
+         1. If `this.[[closed]]` is `false,
+            1. Call `takes.unshift(take)`.
+   1. If `buffer` is `void 0`,
+      1. Let `put` be `puts.pop()`.
+      1. While `put` is object and `put.[[isActive()]]` is `false`,
+         1. Set `put` to `puts.pop()`.
+      1. If `put` is object,
+         1. Call `put.[[complete]](true)`.
+         1. Call `take.[[complete]](put.[[value]])`.
+      1. If `put` is `void 0`,
+         1. If `this.[[closed]]` is `true`,
+            1. Call `take.[[complete]](void 0)
+         1. If `this.[[closed]]` is `false`,
+            1. Call `takes.unshift(take)`.
+1. Return `take`
+
 
 ### Select API
 
-Select allows to make a single choice between several channel
-operations (`put` / `take`). Choice is made is made in favor of operation
-that completes first. If more than one operation is ready to be complete
-at the same time choice is made in favor of the operation which was
-requested first.
+Select allows to make a single choice between several channel operations (`put` / `take`). Choice is made in favor of operation that completes first. If more than one operation is ready to be complete at the same time choice is made in favor of the operation which was requested first.
 
 #### Interface
 
 ```
 [NamedConstructor=Select()]
 interface Select {
-  Promise <any> take(InputPort input);
-  Promise <boolean> put(OutputPort output, any value);
+  Operation <any> take(InputPort input);
+  Operation <boolean> put(OutputPort output, any value);
 }
 
 ```
 
-### Internal API
+#### Properties of the Select prototype
 
-#### Internal functions referred with in a definitions above.
+##### constructor()
 
-##### [[put]](port, data, timeout)
+1. Let `this.[[choice]]` be `undefined`.
+1. Return `this`.
 
-1. If `port` isn't instance of `OutputPort` throw `TypeError`.
-1. Let `promise` be a newly-created pending promise.
-1. Let `put` be `{ data, timeout, promise }`.
-1. If `timeout.pending` is `true`,
-   1. If `put.timeout.pending` is `true`,
-      1. If `port.[[closed]].value` is `true,
-         1. Set `put.timeout.pending` to `false`.
-         1. Fulfill `promise` with `void 0`.
-      1. If `port.[[closed]].value` is `false`
-         1. If `data` is `void 0`
-            1. Set `put.timeout.pending` to `false`
-            1. Fulfill `promise` with `true`.
-         1. If `data` is not `void 0`,
-            1. Let `take` be `port.[[takes]].pop()
-            1. If `take` is object & `take.timeout.pending` is `true`,
-               repeat from previous step.
-            1. If `take` is an object,
-               1. Set `take.timeout.pending` to `false`.
-               1. Fulfill `take.promise` with `data`.
-               1. Set `put.timeout.pending` to `false`.
-               1. Fulfill `put.promise` with `true`.
-            1. If `take` is not an object,
-               1. If `port.[[buffer]]` does not implement `Buffer` interface
-                  or `port.[[buffer]].isFull()` is `true`.
-                  1. Then queue `put` by calling:
-                     `port.[[puts]].unshift(put)`.
+##### put(port, data)
 
-               1. If `port.[[buffer]]` implements `Buffer` interface or
-                  or `port.[[buffer]].isFull()` is `false`,
-                  1. Set `put.timeout.value` to `false`.
-                  1. Fulfill `put.promise` with `true`
-                  1. Add `put.data` to the buffer by calling:
-                     `port.[[buffer]].put(put.data)`
-1. Return `promise`
+1. Let `channel` be `port.[[channel]]`
+1. Return `channel.[[put]](port, data, this)`.
 
+##### take(port)
 
-##### [[take]](port, timeout)
-
-1. If `port` isn't instance of `InputPort` throw `TypeError`.
-1. Let `promise` be a newly-created pending promise.
-1. Let `take` be `{ timeout, promise }`.
-1. If `timeout.pending` is `true`,
-   1. If `port.[[buffer]]` implements `Buffer` intreface and
-      `port.[[buffer]].isEmpty()` returns `false`,
-      1. Set `timeout.pending` to `false`.
-      1. Fulfill `promise` with `port.[[buffer]].take()`.
-      1. If `port.[[buffer]].isFull()` is `false`,
-         1. Let `put` be a `port.[[puts]].pop()`.
-         1. If `put` is not `undefined`
-            1. If `put.timeout.pending` is `true`,
-               1. Set `put.timeout.pending` to `false`,
-               1. Fulfill `put.promise` with `true`,
-               1. Add `put.data` into buffer, by calling:
-                  `put.[[buffer]].put(put.data)`
-            1. If `put.timeout.pending` is `false`,
-               repeat form "Let `put` be a `port.[[puts]].pop()`".
-  1. If `port.[[buffer]]` does not implements `Buffer` interface,
-     or `port.[[buffer]].isEmpty()` returns `true`,
-     1. Let `put` be `puts.pop()`
-     1. If `put` is an object and `put.timeout.pending` is `false`,
-        Repeat from previous step.
-     1. If `put` is an `object`,
-        1. Set `put.timeout.value` to `false`.
-        1. Fulfill `put.promise` to `true`.
-        1. Set `take.timeout.value` to `false`
-        1. Fulfill `take.promise` to `put.data`
-     1. If `put` isnt an `object`
-        1. If `port.[[closed]].value` is `true`
-           1. Set `take.timeout.value` to `false`
-            1. Fulfill `take.promise` to `void 0`
-        1. If `port.[[closed]].value` is `false`,
-           enqueue `take` by invoking:
-           `port.[[takes]].unshift(take)`
-1. Return `promise`
+1. Let `channel` be `port.[[channel]]`
+1. Return `channel.[[take]](port, this)`.
