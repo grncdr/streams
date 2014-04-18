@@ -109,26 +109,26 @@ interface Operation : Promise {
 
 #### Properties of the Operation prototype
 
-#### isPending()
+##### isPending()
 
 1. Let `choice` be `this.[[select]].[[choice]]`.
 1. Let `result` be `true.
 1. If `this` is `choice`, Set `result` to `false`.
 1. Return `result`.
 
-#### valueOf()
+##### valueOf()
 
 1. If `this.isPending()` is `true` throw an Error.
 1. Return `this.[[result]]`.
 
-#### [[isActive]]
+##### [[isActive]]
 
 1. Let `result` be `true`.
 1. If `this.[[select]].[[choice]]` is not `void 0`,
    Set `result` to `false`.
 1. Return `result`.
 
-#### [[complete]](result)
+##### [[complete]]\(result\)
 
 1. If `this.[[isActive]]()` is `false` throw an Error.
 1. Set `this.[[select]].[[choice]]` to `this`.
@@ -164,11 +164,11 @@ interface OutputPort : Port {
 
 #### Properties of the OutputPort prototype
 
-#### constructor(channel)
+##### constructor(channel)
 
 1. Call the `[[Call]]` internal method of `Port`, with `this` as `thisArgument` and `channel` as an argument.
 
-#### get [[Prototype]]
+##### get [[Prototype]]
 
 1. Return `Port.prototype`.
 
@@ -212,7 +212,7 @@ interface InputPort : Port {
 
 1. Call the `[[Call]]` internal method of `Port`, with `this` as `thisArgument` and `channel` as an argument.
 
-#### get [[Prototype]]
+##### get [[Prototype]]
 
 1. Return `Port.prototype`.
 
@@ -223,7 +223,7 @@ interface InputPort : Port {
 1. Return `channel.[[take]](this, void 0)`.
 
 
-### Channel APIs
+### Channel
 
 
 ```
@@ -286,7 +286,7 @@ is going to be enqueued until it can be completed.
 1. Return `void 0`.
 
 
-##### [[put]](port, data, select)
+##### [[put]]\(port, data, select\)
 
 1. If `port` isn't instance of `OutputPort` throw `TypeError`.
 1. Let `puts` be `this.[[puts]]`.
@@ -298,8 +298,8 @@ is going to be enqueued until it can be completed.
 1. If `select` is instance of `Select`,
    1. Set `put.[[select]]` to `select`.
 1. If `put.[[isActive]]()` is `true`,
-   1. If `this.[[closed]]` is `true,
-      call `put.[[complete]](void 0).
+   1. If `this.[[closed]]` is `true`,
+      call `put.[[complete]](void 0)`.
    1. If `this.[[closed]]` is `false` and
       1. If `data` is `void 0`,
          1. call `put.[[complete]](true)`.
@@ -330,7 +330,7 @@ is going to be enqueued until it can be completed.
 1. Return `put`.
 
 
-##### [[take]](port, select)
+##### [[take]]\(port, select\)
 
 1. If `port` isn't instance of `InputPort` throw `TypeError`.
 1. Let `puts` be `this.[[puts]]`.
@@ -369,13 +369,13 @@ is going to be enqueued until it can be completed.
          1. Call `take.[[complete]](put.[[value]])`.
       1. If `put` is `void 0`,
          1. If `this.[[closed]]` is `true`,
-            1. Call `take.[[complete]](void 0)
+            1. Call `take.[[complete]](void 0)`
          1. If `this.[[closed]]` is `false`,
             1. Call `takes.unshift(take)`.
 1. Return `take`
 
 
-### Select API
+### Select
 
 Select allows to make a single choice between several channel operations (`put` / `take`). Choice is made in favor of operation that completes first. If more than one operation is ready to be complete at the same time choice is made in favor of the operation which was requested first.
 
