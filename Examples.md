@@ -6,229 +6,120 @@ This document fleshes out those examples, adding more code and commentary to eac
 
 ## Channels
 
-### Overview
+### History
 
-Channels provide a mechanism to transport data from one part of the application to another. In a nutshell channels are just a pipes that have two endpoints, one for putting data onto them and other for taking data out of them:
+The roots of the channels go back at least as far as [Hoare's Communicating Sequential Processes (CSP)][CSP], followed by realizations and extensions in e.g. [occam][], [Go programming language][go], [Rust programming language][rust], [Clojure core.async library][core.async].
+
+In modern incarnations, the notion of a channel becomes first class, and in doing so provides us the indirection and independence we seek.
+
+
+### Rationale
+
+There comes a time in all good programs when components or subsystems must stop communicating directly with one another. This is often achieved via the introduction of events or queues between the producers of data and the consumers of that data. This architectural indirection ensures that important decisions can be made with some degree of independence, and leads to systems that are easier to understand, manage, monitor and change, and make better use of computational resources, etc.
+
+A key characteristic of channels is that they are blocking (not in a thread blocking sense, but rather in logical sense, you need to asynchronously wait for task to complete to continue). In the most primitive form, an unbuffered channel acts as a rendezvous, any consumer will await a producer and vice-versa. Buffering can be introduced, to allow more flexibility between producer and consumer schedules. Buffering with blocking can be an important tool coordinating pacing and back pressure, ensuring a system doesn't take on more work than it can achieve.
+
+## API
+
+
+Channels provide a message-based communication over different (& typically concurrent) components of the application.
+An `OutputPort` end is used to put data onto channel for an `InputPort` end to take it. Ports are exposed by a channel via `output` and `input` fields.
+
+
+```js
+const { input, output } = new Channel()
+```
+
+Clones of the `output` and `input` can be created by instantiating them via constructor functions `new InputPort(channel)` / `new OutputPort(channel)`.
+
+```js
+const channel = new Channel()
+const out = new OutputPort(channel)
+```
+
+### "Rendezvous" channels
+
+Channels are the building blocks for task coordination and data transfer. A key characteristic of channels that
+make them a good fit for task coordination is that they are blocking, not a **thread** blocking, meaning they do not block execution, but rather a logically blocking. Blocking is expressed via data structures representing result of an **operation** that task can await to complete before continuing with rest of it's job. Since this form of blocking does not actually blocks execution we will refer to as **parking** further on, to avoid confusion.
+
+`OutputPort` defines `put` method that takes arbitrary data and puts it on a channel, returning an instance of `Operation`, which is going to be pending until put is complete. `InputPort` defines `take` method that also returns an instance of `Operation` that is going to be pending until taks is complete.
 
 ```js
 const { input, output } = new Channel()
 
-input.put(1)
-output.take()
+var p1, p2, p3, t1, t2, t3
+
+p1 = output.put(1)  // => Operation <true>
+p1.isPending()      // => true
+p1.valueOf()        // Error: Can not return result of pending operation
+
+p2 = output.put(2)  // => Operation <true>
+p2.isPending()      // => true
+p2.then(function() { console.log("put#2 is complete") })
+
+t1 = input.take()   // => Operation <1>
+t1.isPending()      // => false
+t1.valueOf()        // => 1
+p1.isPending()      // => false
+p1.valueOf()        // => true
+
+t2 = input.take()  // => Operation <2>
+// info: put#2 is complete
+p2.isPending()      // => false
+p2.valueOf()        // => true
+t2.isPending()      // => false
+t2.valueOf()        // => 2
+
+t3 = input.take()   // => Operation <3>
+t3.isPending()      // => true
 ```
 
-Channels provide certain guarantees to allow reasosing about the data flow and to allow coordinatation of the data flow with in the application:
-
-1. Channels act like queues and operate on [FIFO][] basis.
-1. Any `put` on a channel blocks the task (not an execution, but rather semantics) until put is complete. Blocking is expressed via returned promise that is resolved on completion of the put operation.
-1. Data can be `put` on a channel even when it is blocked, in which case operation is enqueued.
-1. Any `take` on a channel blocks task until data is available (is put) on a channel.
-1. When more data is taken of the channel than present take operations are enqueued.
-1. Channels can be closed from either (`input` / `output`) end of it.
-1. Data put on a closed channel is dropped and results in promise that is resolved with `undefined`.
-1. If `undefined` is put on a channel it's just dropped (In a way `undefined` properties are dropped by JSON).
-1. When channel is closed all the pending takes are resolved with `undefined`.
-1. Data put on a channel can still be taken after it is closed.
-1. Taking data of the closed channel that does not contains it results in promise resolved to `undefined` (In a way reading deleted property results in `undefined`).
+The channel conceptually has an infinite queue, where all pending put and take operations are queued up until they are complete. As you could have noticed from the example above channels operate on [FIFO][] basis.
 
 
-### Usage
-
-#### Basics
+### Buffered channels
 
 
-#### Pumping a Channel input To the Console
+So far all of the examples have being "parking" producer and consumer tasks on every single operation, this is useful but, the problem is that this forces producer and a consumer to operate on a same schedule. This can easily be inpractical as it forces one of tasks (producer or consumer) to oparate slower causing wasted CPU cycles. Another option could be to let tasks ignore "parking" completely that essentially removes synchronization from the system, which can easily cause too much memory use caused by pending operations in the queue.
 
-Although the by-far most common way of consuming a channel is to transform it from one form to another, it is useful to see some examples to understand how the underlying primitives work. Consider following `print` function that writes the contents of a given channel to the console:
+Right soultion would usually require balancing out level at which producer and consumer coordinate. This is achived by  bufferring. Channel constructor can be supplied a number argument to construct a bufferred channel, in which case fixed size buffer of that number of puts is pre-allocated and used for storing pending data. Bufferred channels do not "park" producer tasks (puts return complete operations) until buffer is full. Once buffer is full, puts start to "park" producer task until more space on buffer becomes available (which is when data is taken of the channel).
+
 
 ```js
-function print(input) {
-  // Function that is going to process data chunk once
-  // data is available and task is remused.
-  function next(chunk) {
-    // If chunk is `undefined` then channel is closed
-    // and no more data is left.
-    if (chunk === void(0)) {
-      console.log("--- all done!")
-    }
-    // Otherwise log the `chunk` and take a next one.
-    else {
-      console.log(chunk)
-      input.take().then(next)
-    }
-  }
-  input.take().then(next)
-}
+var { input, output } = new Channel(3)
+var p1, p2, p3, p4, t1
 
-var channel = new Channel()
-print(channel.input)
+p1 = output.put(1)   // => Operation <true>
+p1.isPending()       // => false
 
-var output = channel.output
-output.put(1)
-output.put(2)
-output.put(3)
-output.close()
+p2 = output.put(2)   // => Operation <true>
+p2.isPending()       // => false
+
+p3 = output.put(3)   // => Operation <true>
+p3.isPending()       // => false
+
+p4 = output.put(4)   // => Operation <true>
+p4.isPending()       // => true
+
+t1 = input.take()    // => Operation <1>
+t1.isPending()       // false
+
+// Since more space became availabel in buffer
+// p4 was complete.
+p4.isPending()       // false
 ```
 
-#### Pumping array content into Channel output
-
-Although sending array content one element at a time isn't practical it still a useful example for explaning channels. Consider following example:
-
-```js
-function putAll(output, chunks) {
-  return new Promise(function(resolve, reject) {
-    var index = 0
-    function pump(result) {
-      if (index < chunks.length) {
-        output.put(chunks[index]).then(pump)
-        index = index + 1
-      } else {
-        resolve(result)
-      }
-    }
-
-    pump()
-  })
-}
-
-var channel = new Channel()
-putAll(channel.output, [1, 2, 3, 4])
-print(channel.input)
-```
-
-Note that in the above example `putAll` fully respects speed at which channel input is consumed and next data chunk is put when previous one is complete. It is typically a good idea to obay the backpressure, but still useful to have a choice. We could have ignored backpressure and implemented same function as follows:
-
-```js
-function putAll(output, chunks) {
- var result = void(0)
- var index = 0
- while (index < chunks.length) {
-   result = output.put(chunks[index])
-   index = index + 1
- }
-
- return result
-}
-```
-
-Both of the implementations would behave the same although later one will cause channel to queue `put` operations and complete them when possible. Also note that result will be a promise that is resolved once last `put` is complete so in that regard behavior is the same. While in case of arrays there is no practical difference weather backpressure is respected or not there are planty of cases where it does.
+In the example above first three items `1, 2, 3` are bufferred and there for do not "park" producer task. By the time forth put occures buffer is full, there for that operation going to be pending until data is taken off the channel  freeing up space on a buffer. This allows producer and consumer tasks to have their own work schedules and don't waste cycles on waiting each other.
 
 
-#### Coordination
+#### Bufferring strategies
 
-We have being talking about blocking channels for quite some time but the truth no execution has being blocked anywhere (that's definitely for the best :). Blocking term has being used in a conceptual sense and implemented via promises that resolve when task is unblocked. This allows coorditanion between producer and a consumer of the data that is transported via channels (note that backpressure is on form of such coordination).
-
-Unfortunately this coordination and blocking has being hidden behind promises and their handler continuations (callbacks). With a little bit of sugar and modern features of JS language (like generators) everything can be expressed in more natural way, also this conceptual blocking can become more apparent.
+Buffering not adds flexibility to a channel for more balanced coordination between producers and consumers, but it also completele decouples data **transport** (streaming) constraints handled by channels from data **aggregation** (bufferring) constraints handled by buffers. This provides a lot of flexibility on how data transported by channel is handled or stored.
 
 
-Let's consider same `print` function but implemented using little bit of sugar:
+Channel constructor can be supplied a custom `buffer` implementing Buffer API, in which case it is going to be used for storing / aggregating data. This allows users to completely alter the way data is handled by a channel.
 
-```js
-var print = function print(input) {
-  // Spawn an async task that is blocked when promise is yield and
-  // resumed when promise is resolved.
-  spawn(function*() {
-    var chunk = void(0)
-    //  Block generator until `chunk` is received on
-    // `input`. If `chunk` is `undefined` then all
-    // chunks were already received and channel is closed,
-    // otherwise log received chunk.
-    while (chunk = yield input.take(), chunk !== void(0))
-      console.log(chunk)
-
-    console.log("--- all done!")
-  })
-}
-```
-
-In this example `input.take()` does actually block the execution of the spawned task (but nothing else) until the corresponding data is present on the channel.
-
-This covers the consumption part but now let's consider the producer part and implement our first `putAll` example:
-
-```js
-function putAll(output, chunks) {
-  return spawn(function*() {
-    var index = 0
-    var result = void(0)
-    while (index < chunks.length) {
-      result = yield output.put(chunks[index])
-      index = index + 1
-    }
-    return result
-  })
-}
-```
-
-Did you notice how similar this is to the example of `putAll` that was not respecting a blocking, even though in this case it does ? In fact version that does not respect backpressure is almost identical:
-
-```js
-function putAll(output, chunks) {
-  return spawn(function*() {
-    var index = 0
-    var result = void(0)
-    while (index < chunks.length) {
-      result = output.put(chunks[index])
-      index = index + 1
-    }
-    return result
-  })
-}
-```
-
-Only difference is in absence of `yield` keyword  which makes up a pretty simple rule, if you would like to coordinate with other end of the channel just put `yield` in front of `put` or `take`.
-
-
-Here is an example of how above used `spawn` function can be implemented although note that it is expected to get a natural successor to it in ES7 in form of `async await` syntax additions:
-
-```js
-function spawn(routine) {
-  return new Promise(function(resolve, reject) {
-    var task = routine();
-    var raise = function(error) {
-      task.throw(error)
-    }
-    var next = function(data) {
-      var step = task.next(data)
-      if (step.done)
-        resolve(step.value)
-      else
-        Promise.cast(step.value).then(next, raise)
-    }
-    next()
-  })
-}
-```
-
-#### Buffered channels
-
-So far all of the examples have being either coordinating producer and consumer of the channel or have being completely ignoring each other. Both are very practical and let you decide weather you want coordination between different parts of application or not. The problem is though if you choose to synchronize producer and a consumer they would have to operate with a same speed essentially forcing one of them oparate slower and wasting CPU cycles (instead of fetching data over the network for example). If you decide against synchronization than you can wind up in a situation where lot of memory is being wasted on queued up take or put operations. Not to worry though not all is that bad, all one needs is to find a right balance between two in order to compensate speed difference between producer and consumer. This is typically achieved by bufferring, at the instatiation channel can be given a buffer that is used by a channel to accumulate data in it. Until buffer is full puts will not block, after it is full they will block and be queued as it is a case with unbuffered channels.
-
-When channel is given an number as an argument at the instatiation it will have fixed size buffer of that number:
-
-```js
-var channel = new Channel(3)
-var output = channel.output
-
-output.put(1) // => Promise <true>
-output.put(2) // => Promise <true>
-output.put(3) // => Promise <true>
-output.put(4) // => Promise:pending
-```
-
-In the example above first three items `1, 2, 3` are going to be bufferred and there for not block (return pre-resolved promise) while last one will block until `channel.input.take()` occurs. This allows producer and consumer to have their own schedules and don't waste time on waiting each other.
-
-
-As a matter of fact `new Channel(n)` is just a sugar for creating a channel with fixed size buffer of `3` items:
-
-```js
-var buffer = new FixedBuffer(3)
-var channel = new Channel(buffer)
-```
-
-This not only allows you to have some leeway between producer and consumer schedules but it also completely separates concerns of transporting data from the data itself. What this means that depending on use case different buffering strategies can be used without having to change anything about transporting layer (channels).
-
-For example consider implementing sliding buffer that will drop oldests data chunk bufferred when buffer is full:
-
+For example you may define `SlidingBuffer` that would never block producer instead it would drop less relevant data from the channel:
 
 ```js
 function SlidingBuffer(size) {
@@ -253,57 +144,38 @@ SlidingBuffer.prototype.put = function(data) {
   this.buffer.unshift(data)
 }
 
-var channel = new Channel(new SlidingBuffer(30))
+var buffer = new SlidingBuffer(3)
+var { input, output } = new Channel(buffer)
+var p1, p2, p3, p4, t1
+
+p1 = output.put(1)   // => Operation <true>
+p1.isPending()       // => false
+
+p2 = output.put(2)   // => Operation <true>
+p2.isPending()       // => false
+
+p3 = output.put(3)   // => Operation <true>
+p3.isPending()       // => false
+
+p4 = output.put(4)   // => Operation <true>
+
+// Note that because sliding buffer never fulls
+// up channel can never block!
+p4.isPending()       // => false
+
+t1 = input.take()    // => Operation <2>
+t1.isPending()       // false
+
+// Note that because channel uses a sliding buffer
+// which drops oldest data chunks after it aggregates
+// max number of items, first take result is a data
+// that was put second.
+t1.valueOf()         // 2
 ```
 
-above channel will never block as it's buffer is never going to be full. It is also easy to implement other types of buffers maybe something like `DroppingBuffer` that would drop items once overflowing. Or consider a case when streaming video where equivalent keyframes can be dropped if buffer is about to overflow.
+#### Aggregators
 
-
-#### Maximizing throughput
-
-Now if you have being following closely you may be thinking that channels impose a delay at which data can be consumed given that coordination happens through promises. That is only partially true, and should not be a problem in practice, give that all the I/O takes place off the main thread data can be pumped into per tick anyhow.
-
-Although argument can be made what if the channel has being laying arround for some time accumulating data before it was ever consumed. Well first off all yielding back to event loop is typically a not a bad thing, but putting that aside it is always possible to take more the one chunk at a time to process all of them with in one tick:
-
-```js
-var firstThree = [input.take(), input.take(), input.take()]
-Promise.all(firstThree).then(function([first, second, third]) {
-})
-```
-
-Taking multiple chunks at a time to process works well when consumer knows how much data it needs to do it's task. But sometimes it may make more sense to say take as much as it is present on a channel. It is important to realize that this is not transporation (channel) problem but rather a storage (bufferring) problem, since we would like to store data on a channel such that it all can be consumed at once. Given that we identified problem we can implement a simple solution for it:
-
-```js
-function AggregateBuffer(size) {
-  this.size = size
-  this.chunks = []
-}
-AggregateBuffer.prototype.isEmpty = function() {
-  return this.chunks.length === 0
-}
-AggregateBuffer.prototype.isFull = function() {
-  return this.chunks.length === this.size
-}
-AggregateBuffer.prototype.take = function() {
-  return this.chunks.splice(0)
-}
-AggregateBuffer.prototype.put = function(chunk) {
-  this.chunks.push(chunk)
-}
-
-var aggregate = new AggregateBuffer(30)
-var channel = new Channel(aggregate)
-var output = channel.output
-var input = channel.input
-
-output.put(1) // => Promise <true>
-output.put(2) // => Promise <true>
-output.put(3) // => Promise <true>
-
-input.take()  // => Promise <[1, 2, 3]>
-```
-
-When dealing with I/O it is likely that aggregate style buffer will come handy so let's define one such buffer that is not only responsible for aggregating data but also knows type of the data & there for aggregates it in a way that makes most sense to consumer:
+It is natural to that bufferring strategy would as much depend on the type of data channel is transporting as much as it depends on desired aggregation strategy. Good example would be use of channels for represinting binary data coming from I/O task. It would make sense to measure such buffer not in numbers of chunks it can hold but rather in number of bytes, it would also make sense to change how aggregate data is taken from such buffer, which is not in chunk data was put into it originally but rather in whatever is available at a time.
 
 ```js
 function ByteBuffer(size) {
@@ -314,15 +186,23 @@ function ByteBuffer(size) {
 ByteBuffer.prototype.isEmpty = function() {
   return this.byteLength === 0
 }
+// ByteBuffer is full whenever bytes contained by it
+// exceeds it's maximum size.
 ByteBuffer.prototype.isFull = function() {
   return this.size <= this.byteLength
 }
+// ByteBuffer is only compatible with data represnted by
+// ArrayBuffers as that's only thing it can mesure and
+// aggregate.
 ByteBuffer.prototype.put = function(chunk) {
   if (!(chunk instanceof ArrayBuffer))
     throw TypeError("Can only put ArrayBuffer")
   this.chunks.push(chunk)
   this.byteLength = this.byteLength + chunk.byteLength
 }
+// `ByteBuffer` also changes how data is taken from it,
+// it returns `ArrayBuffer` that will contain all of the
+// data that buffer holds.
 ByteBuffer.prototype.take = function() {
   var result = new ArrayBuffer(this.byteLength)
   var chunks = this.chunks.splice(0)
@@ -346,39 +226,339 @@ ByteBuffer.prototype.take = function() {
 
 
 var buffer = new ByteBuffer(1024)
-var channel = new Channel(buffer)
+var { input, output } = new Channel(buffer)
 
-channel.output.put(new TextEncoder("utf-8").encode("hello").buffer) // => Promise <true>
-channel.output.put(new TextEncoder("utf-8").encode(" ").buffer)     // => Promise <true>
-channel.output.put(new TextEncoder("utf-8").encode("world").buffer) // => Promise <true>
+output.put(new TextEncoder("utf-8").encode("hello").buffer) // => Operation <true>
+output.put(new TextEncoder("utf-8").encode(" ").buffer)     // => Operation <true>
+output.put(new TextEncoder("utf-8").encode("world").buffer) // => Operation <true>
 
-channel.input.take().then(function(x) {
-  return TextDecoder("utf-8").decode(new Uint8Array(x))
-}) // => Promise <"hello world">
+var take = input.take()
+take.isPending()           // => false
+
+// Notice that all the data was concatinated and taken at once.
+TextDecoder("utf-8").decode(new Uint8Array(take.valueOf())) // => "hello world"
 ```
 
-### I wanna play a state machine
+### Channel termination
 
-So above section was covering techniques to improve data throughput without adding more complexity or state handling to the API. Although there still maybe a use case where consumer may wanna be in full control on how much to read, when to to yield to event loop and etc.. on it's own. It may not be obvious but channels allow you to do that too. Given the synchronous buffer API and asynchronous channel API you could get a complete control:
+Channel is a communication primitive, and any communication channel has to be terminated at some point. This can be achieved from either end (`input` / `output`) of the channel, simply by closing a port. Whenever either end of the channel is closed, put operations on it are dropped and result to `undefined`.
+
+Data put onto channel still can be taken from it even after channel is closed. Once no more data is left on a closed channel takes from it will result to `undefined`. This implies that any pending take operations from closed channel go
+ing to complete to `undefined` too.
+
+Closing already closed channel has no effects.
 
 ```js
-var buffer = new ByteBuffer(16 * 1024);
-var { input, output } = new Channel(buffer);
+var { input, output } = new Channel(10)
+output.put(1)  // Operation <true>
+output.put(2)  // Operation <true>
+output.close()
 
-function process(x) {
-  console.log(x)
-}
+// Once channel is closed all puts are void.
+output.put(3)  // Operation <void 0>
 
+input.take()   // Operation <1>
 
-function next(chunk, skip)  {
-  if (!skip) process(chunk)
-  while (!buffer.isEmpty()) {
-    process(buffer.take())
-  }
-  input.take().then(next)
-}
-next(void 0, true)
+// Closing closed channel has no effect.
+input.close()
+
+input.take()   // Operation <2>
+
+// Once closed channel is empty all takes are void.
+input.take()   // Operation <void 0>
+input.take()   // Operation <void 0>
 ```
+
+### Type of data
+
+Type of data that channel can transport pretty much depends on a buffer that handles data. If data is rejected by a buffer via thrown exception associated put will fail. In which case operation is no longer going to be pending, but attempt to access it's result will throw an exception raised by a buffer. Take operation is also going to be rejected in a promises sense.
+
+```js
+var buffer = new ByteBuffer(1024)
+var { input, output } = new Channel(buffer)
+
+var put = output.put("hello")
+put.isPending()               // false
+put.valueOf()                 // TypeError: Can only put ArrayBuffer
+put.catch(function(error) {
+  return "Oops"
+})                            // Promise <"Oops">
+```
+
+##### *Consider rejecting attemts to put undefined instead of dropping*
+
+Unless data type that channel can transport is restricted by a buffer, it can transport data of any type, which is anything but `undefined` which is not a data, but rather an absence of it. Attempts to put data are ignored, returning
+operations that result into `true` if channel is open and `undefined` if it is closed. In terms of analogy think of `JSON.stringify({ foo: void 0, bar: 1 })` producing `'{"bar":1}'`.
+
+
+```js
+var { input, output } = new Channel()
+
+
+output.put(void 0)     // => Operation <true>
+output.put(1)          // => Operation <true>
+
+// Note that result of take is `1` as attempts to
+// put `undefined` are dropped.
+input.take()           // => Operation 1
+
+input.close()
+
+// Note that even though attempt to put `undefined` is
+// ignored result still depends on weather channel is
+// open or closed.
+output.put(2)          // => Operation <void 0>
+```
+
+
+### Select
+
+It is often desirable to be able to wait for any one (and only one) of a set of channel operations to complete. This powerful facility is made available through the `Select` API.
+
+`Select` constructor can be used to create a selection task which can be used to perform `take` and `put` operations. Select API guarantees that only one of the attempted operations will be complete (rest will remain pending) and choice is made in favor of the operation that is ready to complete. If more than one operation is ready to complete, first one supplied will be chosen.
+
+```js
+var Select = require("channel").Select
+function read(socket) {
+  var select = new Select()
+  var data = select.take(socket.data)
+  // If error transform error reason to a rejected promise.
+  var error = select.take(socket.error).then(Promise.reject)
+  // Given that select guarantees that only one of the operations
+  // is going to complete we can use `Promise.race` to return
+  // the one that will actually complete.
+  return Promise.race([data, error])
+}
+```
+
+Above example uses select API to choose between two take operations, but it can also be used to choose between different types of operations too.
+
+```js
+function save(data, timeout) {
+  var select = new Select()
+  return Promise.race([
+    select.take(timeout).then(function(x) {
+      console.log("Task has timed out")
+      return Promise.reject(x)
+    }),
+    select.put(server1, data).then(function() {
+      console.log("Wrote ", data, "to server#1")
+    })
+    select.put(server2, data).then(function() {
+      console.log("Wrote ", data, "to server#2")
+    })
+  ])
+}
+```
+
+### Coordinating tasks
+
+Channels are the building blocks for task coordination and data transfer. A key characteristic of channels that
+make them a good fit for task coordination is that they are blocking, not a **thread** blocking, meaning they do not block execution, but rather a logically blocking. Blocking is expressed via data structures representing result of an **operation** that task can await to complete before continuing with rest of it's job. Since this form of blocking does not actually blocks execution we will refer to as **parking** further on, to avoid confusion.
+
+
+The fundamental operations on channels are putting and taking values. Both of those operations potentially park a task, but how thas is handled by a task is left up it's implementation.
+
+Different strategies may have different strength and weaknesses & in order to illustrate them we will implement same
+`pipe(input, output, close)` example that pipes data from `input` port to an `output` port that closes `output` port once `input` is closed if given `close` argument is `true`.
+
+
+#### Coordination (a.k.a back pressure) via Promises
+
+Given that both put and take return `Operation` instances that are derived from `Promise` all the available Promise APIs could be used to coordinate producer and conusmer.
+
+```js
+function pipe(input, output, close) {
+  // Utility function reads chunk from the input and waits
+  // until operation is complete, then continue with write
+  // by passing result of take to it.
+  function read() {
+    input.take().then(write)
+  }
+
+  // Utility function is given a chunk of `data`.
+  function write(data) {
+    // If `data` is void then `input` is closed. If `close`
+    // was passed as `true` close `output` port otherwise
+    // leave it open.
+    if (data === void(0)) {
+      if (close) output.close()
+    }
+    // If actual `data` was passed put it onto `output`
+    // port and wait until opeartion is complete, then continue
+    // with read.
+    else {
+      output.put(data).then(read)
+    }
+  }
+
+  // Initiate read / write loop.
+  read()
+}
+```
+
+Promise based implementation only makes use of already available Promise APIs and is expressed via two simple read & write tasks that give control to each other on complition.
+
+Given that completion of a task is observed via Promise APIs one task per tick limitation is imposed. While giving control back to event loop does not tends to be a problem in common case, there are maybe tasks where imposed limitation is unacceptable. On the other hand it's less hard to hit a race condition when each task happens on a different tick.
+
+
+#### Coordination (a.k.a back pressure) via state machine
+
+In some cases it is important to complete as much operations as possible with in a same tick as it may have impact on the data throughput. This can be achieved by implementing a task as a state machine, that only awaits for an operation if it is pending.
+
+```js
+function pipe(input, output, close) {
+  // `operation` will hold an operation currently being handled.
+  // Initially we start by takeing data from `input`.
+  var operation = input.take()
+  // `state` will be set to either `"take"` or `"put"` to indicating
+  // type of operation being handled. Initial we start with "take".
+  var state = "take"
+
+  // Utility function represnting represents task that runs operation
+  // loop. It alternates between "take" and "put" operations until
+  // hit the pending one. In which case task is suspended and resumed
+  // once pending operation is complete.
+  function run() {
+    // Keep handling operations until hit the one that is pending.
+    while (!operation.isPending()) {
+      // Since `operation` is not pending it's result can be
+      // accessed right away.
+      var result = operation.valueOf()
+      // If `result` is `void` then channel is closed. In such case
+      // close `output` if `closed` was passed as true & abort the
+      // task.
+      if (result === void(0)) {
+        return close && output.close()
+      }
+      // If state machine is in `take` state then switch it
+      // to `put` state, passing along the result of the take
+      // operation.
+      else if (state === "take") {
+        state = "put"
+        operation = output.put(result)
+      }
+      // If state machine is in a `put` state then switch it
+      // to `take` state.
+      else if (state === put) {
+        state = "take"
+        operation = input.take()
+      }
+    }
+
+    // If operation loop was escaped, then current operation is pending.
+    // In such case re-run the task once operation is complete.
+    operation.then(run)
+  }
+
+  // Initiate the run loop.
+  run()
+}
+```
+
+State machine based implementation is overcomes throughput limitation that was present in promise based implementation although that is at the cost of added complexity some of which is not actually that apparent. Since some data chunks are put on `output` synchronously and some asynchronously consumer of that output may hit race conditions if it deals with shared mutable state.
+
+Implementation can also be further refined to pose a limit on operations it handles within a tick, otherwise very active input may exhast event loop.
+
+
+#### Coordination (a.k.a back pressure) via cooperative tasks
+
+
+There are many options of generator based flow control libraries like [task.js][task.js], [co][co], [suspend][suspend] that allow modeling concurrent tasks like **cooperative** threads. They suspend task execution on `yield operation` and resume when `operation` is complete. You can choose your favourite one, but here we are just going to use one thas is included with a [reference implementation][spawn implementation].
+
+```js
+function pipe(input, output, close) {
+  // Start a new concurrent task.
+  spawn(function*() {
+    var chunk = void(0)
+    // yield blocks the task until operation is complete, resuming
+    // it from the point it left off with a result of the operation.
+    // If chunk is `void` input is closed and all data was taken,
+    // which exits the loop.
+    while (chunk = yield input.take(), chunk !== void(0)) {
+      // yield blocks the task until put operation is complete,
+      // resuming it from the point it left off.
+      yield output.put(chunk)
+    }
+    // If optional `close` argument was passed as `true` close an `output`
+    // port as well.
+    if (close) output.close()
+  })
+}
+```
+
+Cooperative task based implementation is really simple as it maintains linear flow of the task. It is also worth noting that based of `spawn` implementation it can process operation per tick (like in case of Promise based implementation) or process as many as available (like in case of State Machine based implementation), which is really great as those decisions can be made independently and will not require any changes to the above `pipe` implementation. Furthermore given that [Async Functions][] are on the Ecmascript roadmap this style will likely to get syntax support & hopefully additional optimizations.
+
+Unfortunately today this approach is not viable on every platform given the lack of genertor presense. Although that could be mitigated via tools like [regenerator][], [degenerate][], [gnode][], etc..
+
+
+### API examples
+
+Given that we have illustrated different ways task coordination (a.k.a back pressure) can be handled further examples will mostly stick to using cooperative tasks as they are more expressive & don't raise immediate questions in regard to weather one or multiple operation is processed per tick. Implementing same with an differnt coordination strategy is left as an excercise to a reader.
+
+#### printing a channel
+
+Although the by-far most common way of consuming a channel is to transform it from one form to another, it is useful to see some examples to understand how the underlying primitives work. Consider following `print` function that writes the contents of a given channel to the console:
+
+```js
+function print(input) {
+  spawn(function() {
+    var chunk = void(0)
+    while (chunk = yield input.take()) {
+      console.log(chunk)
+    }
+    console.log("--- all done")
+  })
+}
+
+var { input, output } = new Channel()
+print(input)
+
+output.put(1)
+output.put(2)
+output.put(3)
+output.close()
+
+// Prints 1 2 3 ---all done
+```
+
+#### Taking multiple chunks at a time
+
+This example, is going to define `take` function that returns given number of data chunks from the input in one batch. If number isn't provided takes all of the chunks at once. If less channel is closed before than given number of chunks is put takes as many chunks as were put. Result is a promise that resolves to an array of taken chunks.
+
+
+```js
+// Takes given number of chunks from the channel or
+// all of them if `n` is not passed.
+function take(input, n) {
+  return spawn(function() {
+    n || Infinity
+    var chunk = void(0)
+    var chunks = []
+    // While we still have not reach `n` number of chunks and
+    // there are still more chunks on input
+    while (chunks.length < n && chunk = yield input.take()) {
+      chunks.push(chunk)
+    }
+    return chunks
+  })
+}
+
+
+var { input, output } = new Channel()
+
+output.put(1)
+output.put(2)
+output.put(3)
+
+take(input, 2) // => Promise <[1, 2]>
+
+output.put(4)
+output.put(5)
+
+take(input)   // => Promise <[3, 4, 5]>
+```
+
 
 ### Error handling
 
@@ -457,17 +637,20 @@ function Socket(host, port, opts) {
   }
 
   function onput() {
-    // Resume only when buffer is empty again.
+    // Resume only if buffer is empty again.
     if (buffer.isEmpty()) {
       rawSocket.resume();
     }
   }
 
   function ondata(chunk) {
-    response.output.put(chunk).then(onput);
-    // Pause whenever buffer is full.
-    if (buffer.isFull()) {
-      rawSocket.pause();
+    var put = response.output.put(chunk)
+    if (put.isPending()) {
+      rawSocket.pause()
+      put.then(onput)
+    } else if {
+      if (put.valueOf() === void(0))
+        rawSocket.close()
     }
   }
 
@@ -489,7 +672,7 @@ print(client.input);
 ```
 
 
-By leveraging channels API it's really simple to keep track of the bufferred data, which can be used to apply backpressure strategy on the underlaying raw socket. If allocated buffer size fills up to the high water mark (defaulting to 16 KiB), signal is sent to the underlying socket that it should stop sending us data. And once the consumer drains all the queued data, it will send the start signal back, resuming the flow of data.
+By leveraging channels API it's really simple to keep track of the bufferred data, which can be used to apply backpressure strategy on the underlaying raw socket. If allocated buffer size fills up to the high water mark (defaulting to 16 KiB), signal is sent to the underlying socket that it should pause sending us data. And once the consumer drains all the put data, it will send the resume signal back, resuming the flow of data.
 
 #### Adapting a Pull-Based Data Source
 
@@ -555,30 +738,22 @@ function FileReader(path, options) {
 }
 FileReader.prototype = Object.create(InputPort.prototype)
 FileReader.prototype.constructor = FileReader
-// FileReader take is like regular take on arbitrary channels, with a
-// difference that it's return type is a `Promise <ByteArray|Error|undefined>`
-// instead of `Promise <ByteArray|undefined>`.
-FileReader.prototype.take = function() {
-  var errors = this[$errors]
-  return this[$data].input.take().then(function(chunk) {
-    return chunk === void(0) && errors.length ? errors.pop() : chunk
-  })
-}
 // `read` method is very much like `take()` with a difference that given a
-// domain knowledge it's rejects promises if taken chunk is an instance of
-// Error.
+// domain knowledge it's going to return data chunk or rejects promises
+// if there is an error.
 FileReader.prototype.read = function() {
-  this.take().then(function(chunk) {
-    return chunk instanceof Error ? Promise.reject(chunk) : chunk
-  })
+  var select = new Select()
+  var data = select.take(this[$data])
+  var error = select.take(this[$errors]).then(Promise.reject)
+
+  return Promise.race([data, error])
 }
 FileReader.prototype.close = function() {
   this[$data].close()
 }
 ```
 
-As you may have noticed example above delegated data handling and loadbalancing to `ByteBuffer` which will cause `FileReader` to pause / resume reading from underlying C++ handler, when buffer is / isn't full.
-While `FileReader` act's as a regular `InputPort` it also provides domain specific functionality allowing consumers to use  traditional error handling techniques:
+As you may have noticed example above delegated data handling and loadbalancing to `ByteBuffer` which will cause `FileReader` to pause / resume reading from underlying C++ handler, when buffer is / isn't full. While `FileReader` act's as a regular `InputPort` it also provides domain specific functionality allowing consumers to use  traditional error handling techniques:
 
 ```js
 spawn(function*() {
@@ -601,3 +776,15 @@ spawn(function*() {
 [FIFO]:http://en.wikipedia.org/wiki/FIFO
 [web workers]:http://www.w3.org/TR/workers/
 [XMLHttpRequest]:http://www.w3.org/TR/XMLHttpRequest/
+[CSP]:http://en.wikipedia.org/wiki/Communicating_sequential_processes
+[occam]:http://en.wikipedia.org/wiki/Occam_programming_language
+[go]:http://golang.org/
+[rust]:http://www.rust-lang.org/
+[core.async]:https://github.com/clojure/core.async
+[co]:https://github.com/visionmedia/co
+[suspend]:https://github.com/jmar777/suspend
+[spawn implementation]:https://github.com/Gozala/channel/blob/master/spawn.js
+[Async Functions]:http://wiki.ecmascript.org/doku.php?id=strawman:async_functions&s=async
+[regenerator]:http://facebook.github.io/regenerator/
+[degenerate]:https://github.com/Gozala/degenerate
+[gnode]:https://github.com/TooTallNate/gnode
