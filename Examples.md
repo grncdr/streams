@@ -559,6 +559,177 @@ output.put(5)
 take(input)   // => Promise <[3, 4, 5]>
 ```
 
+### Combinators
+
+Given that interface for working with channels is really simple, it is trivial to define combinators that inherent backpressure characteristics of the source. Following examples will define bunch of combinators to illustrate that.
+
+#### map(source, f)
+
+Takes a source (input port of the channel) and a function, and returns a input port which contains the values produced by applying `f` to each value taken from the `source`. The port will close when the `source` closes.
+
+```js
+function map(source, f) {
+  var { input, output } = new Channel()
+  spawn(function*() {
+    var chunk = void(0)
+    while (chunk = input.take(), chunk !== void(0)) {
+      output.put(f(chunk))
+    }
+    output.close()
+  })
+  return input
+}
+```
+
+#### filter(source, p)
+
+Takes a source input port and predicate, and returns an input port which contains only the values taken from the source for which the predicate returns true. The port will close when the `source` closes.
+
+```js
+function filter(source, p) {
+  var { input, output } = new Channel()
+  spawn(function*() {
+    var chunk = void(0)
+    while (chunk = input.take(), chunk !== void(0)) {
+      if (p(chunk))
+        output.put(chunk)
+    }
+    output.close()
+  })
+  return input
+}
+```
+
+#### combine(sources, f)
+
+Takes array of source input ports and a combiner function, and returns input port that contains the results of applying `f` to the set of first items of each source, followed by applying f to the set of second items in each source, until any one of the sources is exhausted. Any remaining items in other sources are ignored.
+
+```js
+function take(input) { return input.take() }
+function combine(sources, f) {
+  var { input, output } = new Channel()
+
+  function spawn(function*() {
+    var params = []
+    while (true) {
+      var pending = sources.map(take)
+      var index = 0
+      while (index < pending.length) {
+        var param = yield pending[index]
+        if (param === void(0))
+          return output.close()
+
+        params[index](param)
+        index = index + 1
+      }
+      output.put(f.apply(f, params))
+    }
+  })
+
+  return input
+}
+
+var xys = combine([xs, ys], Array)
+```
+#### merge(sources)
+
+Takes a collection of source input ports and returns an input port which contains all values taken from them. The returned. Returned port will close after all the source ports have closed.
+
+```js
+function merge(sources) {
+  var { input, output } = new Channel()
+
+  // Task that pumps data from source to an output.
+  function* pump(source) {
+    var chunk = void(0)
+    while(chunk = yield source.take(), chunk !== void(0)) {
+      yield output.put(chunk)
+    }
+    open = open - 1
+
+    // If all source inputs were closed close output.
+    if (open === 0)
+    output.close()
+  }
+
+  // spawn concurrent pump task for each source.
+  sources.forEach(function(source) { spawn(pump, source) })
+
+  return input
+}
+```
+
+#### reductions(source, step, initial)
+
+Takes a source input port, step function and an initial state and returns an input port of the intermediate values of the reduction (as per reduce) of `source` by `step`, starting with `initial`.
+
+```js
+function reductions(source, step, initial) {
+  var { input, output } = new Channel()
+
+  spawn(function*() {
+    var past = initial
+    var present = void(0)
+    while (present = yield source.take(), present !== void(0)) {
+      present = step(past, present)
+      yield output.put(present)
+    }
+    output.close()
+  })
+
+  return input
+}
+```
+
+#### split(source, p)
+
+Takes a source input port and a predicate and returns an array of two channels, the first of which will contain the values for which the predicate returned `true`, the second those for which it returned `false`.
+
+```js
+function split(source, p) {
+  var left = new Channel()
+  var right = new Channel()
+
+  spawn(function*() {
+    var chunk = void(0)
+    while (chunk = yield source.take(), chunk !== void(0)) {
+      var output = p(chunk) ? left.output : right.output
+      yield output.put(chunk)
+    }
+    left.output.close()
+    right.output.close()
+  })
+
+  return [left.input, right.input]
+}
+```
+
+#### broadcast(targets, close)
+
+Creates a broadcasting output port which, broadcasts put value to each of the target output ports. If optional `close` is passed as `true` each of the targets will be closed when returned output is closed.
+
+```js
+function put(target, value) { return target.put(value) }
+function close(target) { return target.close() }
+function broadcast(targets, close) {
+  var { input, output } = new Channel()
+
+  spawn(function*() {
+    var chunk = void(0)
+    var count = targets.length
+    while (chunk = yield input.take(), chunk !== void(0)) {
+      var puts = targets.map(put)
+      while (index < count) {
+        yield put[index]
+        index = index + 1
+      }
+    }
+    targets.forEach(close)
+  })
+
+  return output
+}
+```
 
 ### Error handling
 
