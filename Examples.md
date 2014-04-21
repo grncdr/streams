@@ -733,7 +733,7 @@ function broadcast(targets, close) {
 
 ### Error handling
 
-Channels do not provide any specical treatment of errors & the reason is that channel is just a data transport that is guaranteed to deliver data from it's one end to the other, if there is an error it's not a transportation error but an error in some other part of your application. How you handle those errors is orthogonal to a transportation of the data. As a matter of fact differnt use cases will require different ways of signaling and handling errors. One may argue that JS was designed with a built-in error handling mechanism and that's what channels should obey to, althoguh it is important to remember that JS did not had any notion of IO which has changed with addition of [XMLHttpRequest][], it also did not have way to execute things in parallel, which changed with addition of [Web Workers][]. Now if you look at these additions non of them throw exceptions on errors, instead they have a special "error" event type to signal errors. Also keep in mind that while an "error" on [XMLHttpRequest][] happens only once and means that request has failed, "error" on [Workers][] may happen many times (could be triggerred by invalid message parsing for example). Same is true in case of channels, in some cases error on the producer may completely abort the task and close a data channel, while in other cases many errors can occur without any issues. In terms of analogy it helps to think of channels more of a transports for a specific event types rather than [XMLHttpRequest][] or [Worker][] APIs themselfs. In that respect it would make sense to model both `XMLHttpRequest` and `Worker` as a subclasses of some general socket API with three ports:
+Channels do not provide any specical treatment of errors & the reason is that channel is just a data transport that is guaranteed to deliver data from it's one end to the other. If there is an error it's not a transportation error but an error in some other part of your application, it is reasonable to expect that those errors will be handled where they occur as it's is not related to a data transportation. That not to say you should not signal errors between components, as a matter of fact that is very common, although differnt use cases will require different ways of signaling and handling errors. One may argue that JS was designed with a built-in error handling mechanism (which is partually true as exception handling was added later) and that's what channels should obey to. But then it is important to remember that JS does not has any built-in notion of IO, it has being exposed with addition of [XMLHttpRequest][] to a DOM, same story with parallel execution provided via [Web Workers][workers]. If you look at those APIs they dont throw exceptions on errors so you could catch them, because error happens conncurrently outside of your program. Instead you have a special "error" event to signal such errors. Also note that while an "error" on [XMLHttpRequest][] happens only once and means that request has failed, "error" on [Workers][] can occur many times (could be triggerred by invalid message parsing for example). Same is true in case of channels, in some cases error on the producer may completely abort the task and close a data channel, while in other cases many errors can occur without any issues. In terms of analogy it helps to think of channels more of a transports for a specific types of data rather than [XMLHttpRequest][] or [Worker][] themselfs. In that respect it does make sense to model `XMLHttpRequest` and `Worker` as a sockets with output port for sending data, input port for receiving data error port for signaled errors:
 
 ```js
 function Socket() {
@@ -755,17 +755,48 @@ Socket.prototype = {
 }
 ```
 
-Now in case of `XMLHttpRequest` message on the `error` channel would close all three channels as request is failed, while in case of `Worker` that won't happen.
+Now in case of `XMLHttpRequest` message on the `error` channel would close all three channels as request is failed, while in case of `Worker` nothing special is going to happen.
 
 It is also probably no coincidence that OS processes have a very similar interface through `stdin`, `stdout` and `stderr` :)
 
 
-As we go through more examples we'll see how different error handling APIs going to be used in different examples providing a better picture.
+As we go through more examples it will become apparent how different error handling APIs going to be used in different examples, but before we move on let's define simple `Reader` class that can be used in cases where plain try catch based error handling makes most sense.
+
+#### Reader(input, error)
+
+Reader takes data `input` port and `error` input port and create a reader that can represent any data source that may have error. Readers are defined by one method, read that either succeeds or fails depending on weather underlaiyng data source had any errors.
+
+
+```js
+function Reader(input, error) {
+  Object.defineProperties(this, {
+    input: {
+      enumerable: true,
+      configurable: false,
+      writable: false,
+      input: input
+    },
+    error: {
+      enumerable: true,
+      configurable: false,
+      writable: false,
+      output: output
+    }
+  })
+}
+Reader.prototype.read = function() {
+  var select = new Select()
+  var data = select.take(this.input)
+  var error = select.take(this.error).then(Promise.reject)
+
+  return data.isPending() ? Promise.race([data, error]) : data
+}
+```
 
 
 ### Push or Pull
 
-In general whether to use push or pull tends to be a subject of big debate. Producers tend to prefer push based approach while consumers tend to prefer pull based approach. Truth is the only way to satisfy both producer and a consumer is to put a queue between them and let them make choice of whether to use pull or push independently of each other based of their own domain. As a matter of fact buffered channels do exactly that they are just a data queues with internal buffer that is used to smooth out I/O between producer and consumer. Note that when buffer is full, puts are not lost, but rather queued up applying backpressure on the producer. Choosing right buffer for the task is crucial to arranging best use of resources.
+In general whether to use push or pull tends to be a subject of big debate. Producers tend to prefer push based approach while consumers tend to prefer pull based approach. Truth is the only way to satisfy both producer and a consumer is to put a queue between them and let them make choice between pull or push independently of each other based on their own constraints. As a matter of fact buffered channels do exactly that they are just a data queues with internal buffer that is used to smooth out I/O between producer and consumer. Note that when buffer is full, puts are not lost, but rather queued up applying back pressure on the producer. Choosing right buffer for the task is crucial to arranging best use of resources.
 
 
 #### Adapting a Push-Based Data Source
@@ -774,7 +805,7 @@ In general, a push-based data source can be modeled as:
 
 - A `resume` method that starts the flow of data.
 - A `pause` method that pauses the flow of the data.
-- A `close` method that sends an advisory signal to stop the flow of data
+- A `close` method that closes the source.
 - A `ondata` handler that fires when new data is pushed from the source
 - A `onend` handler that fires when the source has no more data
 - A `onerror` handler that fires when the source signals an error getting data.
@@ -783,67 +814,102 @@ As an aside, this is pretty close to the existing HTML [`WebSocket` interface](h
 
 Let's assume we have some raw C++ socket object or similar, which presents the above API. The data it delivers via `ondata` comes in the form of `ArrayBuffer`s. We wish to create a class that wraps that C++ interface into a stream, with a configurable high-water mark set to a reasonable default. This is how you would do it:
 
+
 ```js
-var $input = "@@socket/response";
-var $error = "@@socket/error";
-function Socket(host, port, opts) {
-  opts = opts || {};
-  var highWaterMark = opts.highWaterMark || 16 * 1024;
+function SocketReader(host, port, options) {
+  options = options || {}
+  var highWaterMark = options.highWaterMark || 16 * 1024;
   // Use earlier defined ByteBuffer that will take care of
   // bufferring data and blocking puts if it's full (over the
   // `highWaterMark`).
-  var buffer = new ByteBuffer(highWaterMark);
-  var response = this[$response] = new Channel(buffer);
-  var error = this[$error] = new Channel();
+  var buffer = new ByteBuffer(highWaterMark)
+  var response = new Channel(buffer)
+  var error = = new Channel()
 
-  var rawSocket = createRawSocket(host, port);
+  this.host = host
+  this.port = port
+  Reader.call(this, response.input, error.input)
+
+  var source = createRawSocket(host, port)
 
 
-  function onerror(e) {
-    error.output.put(e);
-  }
-
-  function onend() {
-    response.output.close();
-  }
-
-  function onput() {
-    // Resume only if buffer is empty again.
-    if (buffer.isEmpty()) {
-      rawSocket.resume();
+  function onput(open) {
+    // If response channel was closed close a socket.
+    if (!open) {
+      source.close()
+    }
+    // If buffer is fully empty, resume socket again.
+    else if (buffer.isEmpty()) {
+      source.resume()
     }
   }
 
-  function ondata(chunk) {
+  source.onerror = function(e) {
+    error.output.put(e)
+  };
+  source.onend = function() {
+    response.output.close()
+  }
+  source.ondata = function(chunk) {
     var put = response.output.put(chunk)
     if (put.isPending()) {
-      rawSocket.pause()
+      source.pause()
       put.then(onput)
-    } else if {
-      if (put.valueOf() === void(0))
-        rawSocket.close()
+    }
+    // If response channel is closed close
+    // the underlaynig socket source.
+    else if (!put.valueOf())
+      source.close()
     }
   }
 
-
-  rawSocket.onerror = onerror;
-  rawSocket.onend = onend;
-  rawSocket.ondata = ondata;
-
-  rawSocket.resume();
+  // start a underlying data source.
+  source.resume()
 }
-Socket.prototype = {
-  constructor: Socket,
-  get input() { return this[$response].input },
-  get error() { return this[$error].input }
-}
-
-var client = new Socket("http://example.com", 80);
-print(client.input);
+SocketReader.prototype = Object.create(Reader.prototype)
+SocketReader.prototype.constructor = Reader
 ```
 
+By leveraging channels API it's is really simple to apply backpressure strategy on the underlaying raw socket. If allocated buffer size fills up to the high water mark (defaulting to 16 KiB), signal is sent to the underlying socket that it should pause sending us data. And once the consumer drains all the put data, it will send the resume signal back, resuming the flow of data. If consumer closes a channel than underlying socket connection is closed.
 
-By leveraging channels API it's really simple to keep track of the bufferred data, which can be used to apply backpressure strategy on the underlaying raw socket. If allocated buffer size fills up to the high water mark (defaulting to 16 KiB), signal is sent to the underlying socket that it should pause sending us data. And once the consumer drains all the put data, it will send the resume signal back, resuming the flow of data.
+Error handling for readers can be approached in two different ways depending what fits the design of the compenents the best.
+
+#### Plain try catch
+
+In some case it make most sense to handle errors in a read loop like in example below:
+
+```js
+var client = new SocketReader("http://example.com", 80)
+
+spawn(function*() {
+  var chunk = void(0)
+  try {
+    while (chunk = yield client.read()) {
+      console.log(chunk)
+    }
+    console.log("Read " + client.host + ":" client.port)
+  } catch (error) {
+    console.error("Failed to read " + client.host + ":" + client.port, error)
+  }
+})
+```
+
+#### Seperation of handlers
+
+In other cases it may make sense to spawn two different tasks one handling error recovery and other one handling regular data. This also allows you to use simple combinator functions on each port where you likely would going
+to do different things.
+
+```js
+var client = new SocketReader("http://example.com", 80)
+print(map(client.input, JSON.parse))
+spawn(function*() {
+  if (yield client.error.take()) {
+    // You'd probabaly wanna do some error recovery here instead.
+    console.error("Failed to read " + client.host + ":" + client.port, error)
+  }
+})
+```
+
 
 #### Adapting a Pull-Based Data Source
 
@@ -858,11 +924,10 @@ Let's assume that we have some raw C++ file handle API matching this type of set
 
 ```js
 // Just an utilities to wrap raw file API into promise based interface.
-function open(path) {
-  return new Promise(function(resolve, reject) {
-    var file = createRawFileHandle(filename);
-    file.open(function(error) {
-      if (error) reject(error)
+function open(path, data, error) {
+  var file = createRawFileHandle(filename);
+  file.open(function(e) {
+    if (error) reject(error)
       else resolve(file)
     })
   })
@@ -878,15 +943,13 @@ function read(file) {
   })
 }
 
-var $data = "@@file-reader/data"
-var $errors = "@@file-reader/errors"
 function FileReader(path, options) {
   options = options || {}
   var buffer = new ByteBuffer(options.highWaterMark || 16 * 1024)
-  var data = this[$data] = new Channel(buffer)
-  var errors = this[$errors] = []
+  var data = new Channel(buffer)
+  var error = new Channel()
 
-  this.onTake = this.onTake.bind(this)
+  Reader.call(this, data.input, errror.input)
 
   spawn(function*() {
     var file = void(0)
@@ -897,8 +960,8 @@ function FileReader(path, options) {
       while (chunk = yield read(file)) {
         yield data.output.put(chunk)
       }
-    } catch(error) {
-      errors.unshift(error)
+    } catch(e) {
+      error.output.put(e)
     } finally {
       if (file)
         file.close()
@@ -907,21 +970,7 @@ function FileReader(path, options) {
     data.output.close()
   })
 }
-FileReader.prototype = Object.create(InputPort.prototype)
-FileReader.prototype.constructor = FileReader
-// `read` method is very much like `take()` with a difference that given a
-// domain knowledge it's going to return data chunk or rejects promises
-// if there is an error.
-FileReader.prototype.read = function() {
-  var select = new Select()
-  var data = select.take(this[$data])
-  var error = select.take(this[$errors]).then(Promise.reject)
-
-  return Promise.race([data, error])
-}
-FileReader.prototype.close = function() {
-  this[$data].close()
-}
+FileReader.prototype = Object.create(Reader.prototype)
 ```
 
 As you may have noticed example above delegated data handling and loadbalancing to `ByteBuffer` which will cause `FileReader` to pause / resume reading from underlying C++ handler, when buffer is / isn't full. While `FileReader` act's as a regular `InputPort` it also provides domain specific functionality allowing consumers to use  traditional error handling techniques:
@@ -945,7 +994,7 @@ spawn(function*() {
 
 [Task.js]:http://taskjs.org/
 [FIFO]:http://en.wikipedia.org/wiki/FIFO
-[web workers]:http://www.w3.org/TR/workers/
+[workers]:http://www.w3.org/TR/workers/
 [XMLHttpRequest]:http://www.w3.org/TR/XMLHttpRequest/
 [CSP]:http://en.wikipedia.org/wiki/Communicating_sequential_processes
 [occam]:http://en.wikipedia.org/wiki/Occam_programming_language
