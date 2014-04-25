@@ -638,6 +638,7 @@ Takes a collection of source input ports and returns an input port which contain
 ```js
 function merge(sources) {
   var { input, output } = new Channel()
+  var open = sources.length
 
   // Task that pumps data from source to an output.
   function* pump(source) {
@@ -649,7 +650,7 @@ function merge(sources) {
 
     // If all source inputs were closed close output.
     if (open === 0)
-    output.close()
+      output.close()
   }
 
   // spawn concurrent pump task for each source.
