@@ -22,8 +22,8 @@ A key characteristic of channels is that they are blocking (not in a thread bloc
 ## API
 
 
-Channels provide a message-based communication over different (& typically concurrent) components of the application.
-An `OutputPort` end is used to put data onto channel for an `InputPort` end to take it. Ports are exposed by a channel via `output` and `input` fields.
+Channels provide message-based communication between different (& typically concurrent) components of the application.
+Each channel has two "ends": an `OutputPort` end is used to put data onto channel, and an `InputPort` end to take it. Ports are exposed by a channel via `output` and `input` fields.
 
 
 ```js
@@ -40,9 +40,9 @@ const out = new OutputPort(channel)
 ### "Rendezvous" channels
 
 Channels are the building blocks for task coordination and data transfer. A key characteristic of channels that
-make them a good fit for task coordination is that they are blocking, not a **thread** blocking, meaning they do not block execution, but rather a logically blocking. Blocking is expressed via data structures representing result of an **operation** that task can await to complete before continuing with rest of it's job. Since this form of blocking does not actually blocks execution we will refer to as **parking** further on, to avoid confusion.
+make them a good fit for task coordination is that they are blocking. Not **thread** blocking, because they do not block execution, but rather a logically blocking. Blocking is expressed via data structures representing result of an **operation**, allowing tasks to await completion of the operation before continuing with rest of it's job. Since this form of blocking does not actually block execution we will refer to as **parking** from here on to avoid confusion.
 
-`OutputPort` defines `put` method that takes arbitrary data and puts it on a channel, returning an instance of `Operation`, which is going to be pending until put is complete. `InputPort` defines `take` method that also returns an instance of `Operation` that is going to be pending until taks is complete.
+`OutputPort` defines a `put` method that takes arbitrary data and puts it on a channel, returning an instance of `Operation`, which will be pending until the channel has accepted the data. `InputPort` defines a `take` method that also returns an instance of `Operation`, which will be pending until some data is available. `put` and `take` operations are matched; if there is a pending `take` operation when `put` is called, the `put` operation can complete immediately, and vice versa.
 
 ```js
 const { input, output } = new Channel()
@@ -74,15 +74,15 @@ t3 = input.take()   // => Operation <3>
 t3.isPending()      // => true
 ```
 
-The channel conceptually has an infinite queue, where all pending put and take operations are queued up until they are complete. As you could have noticed from the example above channels operate on [FIFO][] basis.
+The channel conceptually has an infinite queue, where all pending put and take operations are queued up until they are complete. As you may have noticed from the example above channels operate on [FIFO][] basis.
 
 
 ### Buffered channels
 
 
-So far all of the examples have being "parking" producer and consumer tasks on every single operation, this is useful but, the problem is that this forces producer and a consumer to operate on a same schedule. This can easily be inpractical as it forces one of tasks (producer or consumer) to oparate slower causing wasted CPU cycles. Another option could be to let tasks ignore "parking" completely that essentially removes synchronization from the system, which can easily cause too much memory use caused by pending operations in the queue.
+So far all of the examples have being "parking" producer and consumer tasks on every single operation, this is useful but forces producer and a consumer to operate on a same schedule. This can be undesirable as it forces one of the tasks (producer or consumer) to operate slower causing wasted CPU cycles. Another option could be to let tasks ignore "parking" completely. That essentially removes synchronization from the system, which can easily lead to excessive memory consumption caused by pending operations in the queue.
 
-Right soultion would usually require balancing out level at which producer and consumer coordinate. This is achived by  bufferring. Channel constructor can be supplied a number argument to construct a bufferred channel, in which case fixed size buffer of that number of puts is pre-allocated and used for storing pending data. Bufferred channels do not "park" producer tasks (puts return complete operations) until buffer is full. Once buffer is full, puts start to "park" producer task until more space on buffer becomes available (which is when data is taken of the channel).
+A correct solution would usually require a "balancing out" level at which producer and consumer coordinate. This is achieved by buffering. The `Channel` constructor can be supplied a number argument to construct a buffered channel, in which case a fixed size buffer of that length is pre-allocated and used for storing pending data. Puts to a buffered channels buffer the data internally until a take removes it, and will not "park" producer tasks until the buffer is full. Once the buffer is full, `put` operations start to "park" the producer task until data is taken off the channel, freeing up space in buffer.
 
 
 ```js
@@ -104,22 +104,22 @@ p4.isPending()       // => true
 t1 = input.take()    // => Operation <1>
 t1.isPending()       // false
 
-// Since more space became availabel in buffer
+// Since more space became available in buffer
 // p4 was complete.
 p4.isPending()       // false
 ```
 
-In the example above first three items `1, 2, 3` are bufferred and there for do not "park" producer task. By the time forth put occures buffer is full, there for that operation going to be pending until data is taken off the channel  freeing up space on a buffer. This allows producer and consumer tasks to have their own work schedules and don't waste cycles on waiting each other.
+In the example above first three items `1, 2, 3` are buffered and there for do not "park" producer task. By the time the fourth put occurs the buffer is full, therefore that operation going to be pending until data is taken off the channel, freeing up space in the buffer. This allows producer and consumer tasks to have their own work schedules and spend less time waiting on each other.
 
 
 #### Bufferring strategies
 
-Buffering not adds flexibility to a channel for more balanced coordination between producers and consumers, but it also completele decouples data **transport** (streaming) constraints handled by channels from data **aggregation** (bufferring) constraints handled by buffers. This provides a lot of flexibility on how data transported by channel is handled or stored.
+Buffering not only adds flexibility to a channel for more balanced coordination between producers and consumers, it also completely decouples data **transport** (streaming) constraints handled by channels from data **aggregation** (buffering) constraints handled by buffers. This provides a lot of flexibility on how data transported by channel is handled or stored.
 
 
-Channel constructor can be supplied a custom `buffer` implementing Buffer API, in which case it is going to be used for storing / aggregating data. This allows users to completely alter the way data is handled by a channel.
+The `Channel` constructor can be supplied with a custom `buffer` object implementing a Buffer API, in which case it is going to be used for storing / aggregating data. Thus allowing users to completely alter the way data is handled by a channel.
 
-For example you may define `SlidingBuffer` that would never block producer instead it would drop less relevant data from the channel:
+For example you may define a `SlidingBuffer` that would never block producer instead it would drop less relevant data from the channel:
 
 ```js
 function SlidingBuffer(size) {
@@ -175,7 +175,7 @@ t1.valueOf()         // 2
 
 #### Aggregators
 
-It is natural to that bufferring strategy would as much depend on the type of data channel is transporting as much as it depends on desired aggregation strategy. Good example would be use of channels for represinting binary data coming from I/O task. It would make sense to measure such buffer not in numbers of chunks it can hold but rather in number of bytes, it would also make sense to change how aggregate data is taken from such buffer, which is not in chunk data was put into it originally but rather in whatever is available at a time.
+It is natural that the buffering strategy would depend as much on the type of data a channel is transporting as it depends on desired aggregation strategy. One example would be use of channels for representing binary data coming from an I/O task. It would make sense for such a "binary channel" to use a buffer that measures it's size in bytes rather than the numbers of chunks it has received from the I/O task. Additionally, it would make sense to change how data is taken from such a buffer, returning a single chunk that that aggregates all available data would be more efficient than the many small chunks originally `put` into the buffer.
 
 ```js
 function ByteBuffer(size) {
@@ -235,16 +235,15 @@ output.put(new TextEncoder("utf-8").encode("world").buffer) // => Operation <tru
 var take = input.take()
 take.isPending()           // => false
 
-// Notice that all the data was concatinated and taken at once.
+// Notice that all the data was concatenated and taken at once.
 TextDecoder("utf-8").decode(new Uint8Array(take.valueOf())) // => "hello world"
 ```
 
 ### Channel termination
 
-Channel is a communication primitive, and any communication channel has to be terminated at some point. This can be achieved from either end (`input` / `output`) of the channel, simply by closing a port. Whenever either end of the channel is closed, put operations on it are dropped and result to `undefined`.
+Channel is a communication primitive, and any communication has to be terminated at some point. This can be achieved from either end (`input` / `output`) of the channel, simply by closing a port. Whenever either end of the channel is closed, put operations on it are dropped and result to `undefined`.
 
-Data put onto channel still can be taken from it even after channel is closed. Once no more data is left on a closed channel takes from it will result to `undefined`. This implies that any pending take operations from closed channel go
-ing to complete to `undefined` too.
+Data put onto channel still can be taken from it even after channel is closed. Once no more data is left on a closed channel takes from it will result to `undefined`. This implies that any pending take operations from a closed channel will also complete to `undefined`.
 
 Closing already closed channel has no effects.
 
